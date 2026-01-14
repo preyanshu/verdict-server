@@ -9,7 +9,7 @@ import routerABI from '../../contracts/abi.json';
  */
 interface VerdictRouter extends BaseContract {
     getDeployedContracts(): Promise<{ _vUSDC: string; _registry: string; _factory: string; _amm: string }>;
-    registerAgent(agentAddress: string): Promise<ContractTransactionResponse>;
+    registerAgent(agentAddress: string, overrides?: any): Promise<ContractTransactionResponse>;
     userFaucet(overrides?: any): Promise<ContractTransactionResponse>;
     createProposal(
         id: string,
@@ -174,13 +174,13 @@ export async function registerAllAgents(agents: Agent[]): Promise<string[]> {
 
     if (backendBalance < neededWei) {
         console.log(`Backend funds low. Tapping faucet...`);
-        const tapsNeeded = Math.ceil(TOTAL_NEEDED / 1000) + 1;
+        // Each faucet call via router gives 100 vUSDC
+        const tapsNeeded = Math.ceil(Number(ethers.formatUnits(neededWei - backendBalance, 18)) / 100);
         for (let i = 0; i < tapsNeeded; i++) {
             const tx = await router.userFaucet({ nonce: nonce++ });
             await tx.wait();
             txHashes.push(tx.hash);
         }
-        backendBalance = await vusdc.balanceOf(signer.address);
     }
 
     for (const agent of agents) {
@@ -191,7 +191,34 @@ export async function registerAllAgents(agents: Agent[]): Promise<string[]> {
 
             console.log(`${agent.personality.name}: ${balance} (Target ${TARGET_BALANCE})`);
 
-            if (balance > TARGET_BALANCE) {
+            // If agent has 0 balance, use the official registerAgent function to mint 500 vUSDC
+            if (balance === 0) {
+                console.log(`   Registering agent to mint initial capital...`);
+                const tx = await router.registerAgent(agent.wallet.address, { nonce: nonce++ });
+                await tx.wait();
+                txHashes.push(tx.hash);
+
+                // Update local balance view
+                const newBalanceWei = await vusdc.balanceOf(agent.wallet.address);
+                const excess = newBalanceWei - targetWei;
+
+                // Ensure agent has gas before transferring back
+                const eth = await prov.getBalance(agent.wallet.address);
+                if (eth < ethers.parseEther("0.05")) {
+                    const gasTx = await signer.sendTransaction({ to: agent.wallet.address, value: ethers.parseEther("0.1"), nonce: nonce++ });
+                    await gasTx.wait();
+                    txHashes.push(gasTx.hash);
+                }
+
+                const agentSigner = getAgentSigner(agent, prov);
+                const agentVUSDC = vusdc.connect(agentSigner) as unknown as ERC20;
+                const agentNonce = await prov.getTransactionCount(agent.wallet.address);
+
+                const returnTx = await agentVUSDC.transfer(signer.address, excess, { nonce: agentNonce });
+                await returnTx.wait();
+                txHashes.push(returnTx.hash);
+                console.log(`   Reset to 100 (and replenished backend)`);
+            } else if (balance > TARGET_BALANCE) {
                 const excess = balanceWei - targetWei;
                 const agentSigner = getAgentSigner(agent, prov);
                 const agentVUSDC = vusdc.connect(agentSigner) as unknown as ERC20;
