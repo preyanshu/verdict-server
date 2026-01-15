@@ -13,11 +13,22 @@ export function graduateProposal(strategy: MarketStrategy): void {
 
 /**
  * Sync graduated proposals (usually from blockchain on startup)
+ * Preserves usedDataSources from existing in-memory proposals if available
  */
 export function syncGraduatedProposals(strategies: MarketStrategy[]): void {
     console.log(`Syncing ${strategies.length} graduated proposals into database...`);
     strategies.forEach(s => {
-        if (!graduatedProposals.find(p => p.id === s.id && p.timestamp === s.timestamp)) {
+        const existing = graduatedProposals.find(p => p.id === s.id);
+        if (existing) {
+            // Preserve usedDataSources from existing in-memory proposal if blockchain version is empty
+            if (existing.usedDataSources && existing.usedDataSources.length > 0 && 
+                (!s.usedDataSources || s.usedDataSources.length === 0)) {
+                s.usedDataSources = existing.usedDataSources;
+            }
+            // Update other fields from blockchain version
+            Object.assign(existing, s);
+        } else {
+            // New proposal, add it
             graduatedProposals.push(s);
         }
     });

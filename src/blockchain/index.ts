@@ -1200,16 +1200,25 @@ export async function fetchGraduatedProposalsOnChain(): Promise<MarketStrategy[]
         const router = getRouter();
         const ids = await router.getGraduatedProposals();
         const strategies: MarketStrategy[] = [];
+        
+        // Import in-memory graduated proposals to preserve usedDataSources
+        const { getGraduatedProposals } = await import('../core/db');
+        const inMemoryGraduated = getGraduatedProposals();
 
         for (const id of ids) {
             const p = await router.getProposalStatus(id);
+            
+            // Try to find matching in-memory proposal to preserve usedDataSources
+            const inMemoryMatch = inMemoryGraduated.find(im => im.id === id);
+            const preservedDataSources = inMemoryMatch?.usedDataSources || [];
+            
             strategies.push({
                 id: p.id,
                 name: p.name,
                 description: p.description,
                 evaluationLogic: p.evaluationLogic,
                 mathematicalLogic: p.mathematicalLogic,
-                usedDataSources: [],
+                usedDataSources: preservedDataSources, // Preserve from in-memory if available
                 resolutionDeadline: Number(p.resolutionDeadline),
                 timestamp: Number(p.timestamp),
                 resolved: p.resolved,

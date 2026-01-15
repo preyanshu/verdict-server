@@ -30,6 +30,7 @@ export function initializeMarket(): MarketState {
     isExecutingTrades: false, // Not executing trades initially
     isExecutingTradeBatch: false, // Not executing a trade batch initially
     isMakingBatchLLMCall: false, // No batch LLM call in progress initially
+    isLLMRateLimited: false, // LLM API is not rate limited initially
   };
 }
 
