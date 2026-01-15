@@ -1,5 +1,5 @@
 import { ethers } from 'ethers';
-import { initBlockchain, getBackendSigner, getProvider } from '../blockchain';
+import { initBlockchain, getBackendSigner, getProvider, getGasPriceOverride } from '../blockchain';
 
 async function sendMNT() {
   try {
@@ -10,18 +10,19 @@ async function sendMNT() {
     const provider = getProvider();
     
     const recipientAddress = '0x7B84d43717900fC0D06A262772C67737aF9Bb9dF';
-    const amountMNT = 2.5;
-    const amountWei = ethers.parseEther(amountMNT.toString());
+    const { config } = await import('../core/config');
+    const amountNative = 2.5;
+    const amountWei = ethers.parseEther(amountNative.toString());
     
-    console.log(`\nSending ${amountMNT} MNT to ${recipientAddress}...`);
+    console.log(`\nSending ${amountNative} ${config.blockchain.currencySymbol} to ${recipientAddress}...`);
     console.log(`From: ${signer.address}`);
     
     // Check balance
     const balance = await provider.getBalance(signer.address);
-    console.log(`Backend balance: ${ethers.formatEther(balance)} MNT`);
+    console.log(`Backend balance: ${ethers.formatEther(balance)} ${config.blockchain.currencySymbol}`);
     
     if (balance < amountWei) {
-      throw new Error(`Insufficient balance. Need ${amountMNT} MNT but have ${ethers.formatEther(balance)} MNT`);
+      throw new Error(`Insufficient balance. Need ${amountNative} ${config.blockchain.currencySymbol} but have ${ethers.formatEther(balance)} ${config.blockchain.currencySymbol}`);
     }
     
     // Get fresh nonce
@@ -29,11 +30,12 @@ async function sendMNT() {
     console.log(`Using nonce: ${nonce}`);
     
     // Send transaction
+    const gasPriceOverride = getGasPriceOverride();
     const tx = await signer.sendTransaction({
       to: recipientAddress,
       value: amountWei,
       nonce,
-      gasPrice: ethers.parseUnits("0.02", "gwei")
+      ...gasPriceOverride
     });
     
     console.log(`\n✅ Transaction sent: ${tx.hash}`);
@@ -42,9 +44,8 @@ async function sendMNT() {
     const receipt = await tx.wait();
     console.log(`✅ Transaction confirmed in block ${receipt?.blockNumber}`);
     
-    const { config } = await import('../core/config');
     console.log(`\n🔗 View on explorer: ${config.blockchain.blockExplorerUrl}/tx/${tx.hash}`);
-    console.log(`\n✅ Successfully sent ${amountMNT} MNT to ${recipientAddress}`);
+    console.log(`\n✅ Successfully sent ${amountNative} ${config.blockchain.currencySymbol} to ${recipientAddress}`);
     
   } catch (error: any) {
     console.error(`\n❌ Error:`, error?.message || error);

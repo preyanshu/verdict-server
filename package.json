@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@google/genai": "^1.35.0",
+    "@heyputer/puter.js": "^2.2.5",
     "@openai/agents-extensions": "^0.3.7",
     "ethers": "^6.16.0",
     "openai": "^6.16.0"

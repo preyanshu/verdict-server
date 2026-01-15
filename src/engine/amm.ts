@@ -155,6 +155,105 @@ export function calculateVUSDForNO(
   return Math.min(noTokensIn, yesTokensReceived);
 }
 
+/**
+ * Calculate how many YES tokens you get for a given amount of vUSD
+ * Uses the same constant product formula as the contract
+ * @param vUSDIn Amount of vUSD to swap
+ * @param vUSDReserve Current vUSDC reserve in the pool
+ * @param yesReserve Current YES token reserve in the pool
+ * @returns Number of YES tokens received
+ */
+export function calculateYESForVUSDSwap(
+  vUSDIn: number,
+  vUSDReserve: number,
+  yesReserve: number
+): number {
+  if (vUSDIn <= 0 || vUSDReserve <= 0 || yesReserve <= 0) return 0;
+  
+  // Contract constants
+  const FEE_BPS = 30;
+  const BPS_DENOMINATOR = 10000;
+  
+  // Work with BigInt for precision (values are in wei = 18 decimals)
+  // Use string conversion to avoid precision loss
+  const amountInWei = BigInt(Math.floor(vUSDIn * 1e18));
+  const reserveInWei = BigInt(Math.floor(vUSDReserve * 1e18));
+  const reserveOutWei = BigInt(Math.floor(yesReserve * 1e18));
+  
+  // Contract formula: amountInWithFee = amountIn * (BPS_DENOMINATOR - FEE_BPS)
+  // Note: This is NOT divided by BPS_DENOMINATOR yet - that happens in the denominator
+  const amountInWithFee = amountInWei * BigInt(BPS_DENOMINATOR - FEE_BPS);
+  
+  // Contract formula: amountOut = (amountInWithFee * reserveOut) / (reserveIn * BPS_DENOMINATOR + amountInWithFee)
+  const numerator = amountInWithFee * reserveOutWei;
+  const denominator = reserveInWei * BigInt(BPS_DENOMINATOR) + amountInWithFee;
+  
+  // Avoid division by zero
+  if (denominator === 0n) return 0;
+  
+  const amountOutWei = numerator / denominator;
+  
+  // Convert back to number (divide by 1e18)
+  // Use Number() conversion which handles BigInt correctly
+  return Number(amountOutWei) / 1e18;
+}
+
+/**
+ * Calculate the effective vUSD price per YES token
+ * This is the actual price you pay when swapping vUSD for YES tokens
+ * @param vUSDReserve Current vUSDC reserve in the pool
+ * @param yesReserve Current YES token reserve in the pool
+ * @returns Price in vUSD per YES token
+ */
+export function getYESPriceInVUSD(vUSDReserve: number, yesReserve: number): number {
+  if (yesReserve === 0 || vUSDReserve === 0) return 1.0; // Default to 1:1 if no liquidity
+  
+  // Calculate how many YES tokens you get for 1 vUSD
+  const yesTokensFor1VUSD = calculateYESForVUSDSwap(1.0, vUSDReserve, yesReserve);
+  
+  if (yesTokensFor1VUSD === 0) return 1.0;
+  
+  // Price per YES token = 1 vUSD / YES tokens received
+  return 1.0 / yesTokensFor1VUSD;
+}
+
+/**
+ * Calculate how many vUSD you get for selling YES tokens
+ * Uses the same constant product formula as the contract
+ * @param yesTokensIn Amount of YES tokens to sell
+ * @param vUSDReserve Current vUSDC reserve in the pool
+ * @param yesReserve Current YES token reserve in the pool
+ * @returns Amount of vUSD received
+ */
+export function calculateVUSDForYESSwap(
+  yesTokensIn: number,
+  vUSDReserve: number,
+  yesReserve: number
+): number {
+  if (yesTokensIn <= 0 || vUSDReserve <= 0 || yesReserve <= 0) return 0;
+  
+  // Contract constants
+  const FEE_BPS = 30;
+  const BPS_DENOMINATOR = 10000;
+  
+  // Work with BigInt for precision
+  const amountInWei = BigInt(Math.floor(yesTokensIn * 1e18));
+  const reserveInWei = BigInt(Math.floor(yesReserve * 1e18));
+  const reserveOutWei = BigInt(Math.floor(vUSDReserve * 1e18));
+  
+  // Contract formula: amountInWithFee = amountIn * (BPS_DENOMINATOR - FEE_BPS)
+  const amountInWithFee = amountInWei * BigInt(BPS_DENOMINATOR - FEE_BPS);
+  
+  // Contract formula: amountOut = (amountInWithFee * reserveOut) / (reserveIn * BPS_DENOMINATOR + amountInWithFee)
+  const numerator = amountInWithFee * reserveOutWei;
+  const denominator = reserveInWei * BigInt(BPS_DENOMINATOR) + amountInWithFee;
+  
+  if (denominator === 0n) return 0;
+  const amountOutWei = numerator / denominator;
+  
+  return Number(amountOutWei) / 1e18;
+}
+
 // Legacy function names for backward compatibility (will be updated in strategies)
 export function getAMMPrice(vUSDReserve: number, tokenReserve: number): number {
   // This is a legacy function - should use getYESPrice/getNOPrice instead

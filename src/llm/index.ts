@@ -3,12 +3,12 @@ import { getYESPrice, getNOPrice, calculateYESForVUSD, calculateNOForVUSD } from
 import { getAgentTokenHoldings } from '../agents';
 import { log } from '../core/logger';
 import { getAllDataSources, type DataSource, SUPPORTED_EXCHANGE_RATE_CURRENCIES, NON_PREMIUM_INFLATION_COUNTRIES } from './dataSources';
-import { handleOpenAIToolConversation, simpleGeminiCompletion } from './tools';
+import { handleOpenAIToolConversation, simpleGroqCompletion } from './tools';
 import { config, isDev } from '../core/config';
 
-// Google Gemini API configuration
-const GEMINI_API_KEY = config.gemini.apiKey;
-const GEMINI_MODEL = config.gemini.model;
+// Groq API configuration
+const GROQ_API_KEY = config.groq.apiKey;
+const GROQ_MODEL = config.groq.model;
 
 /**
  * LLM API call for all agents using yes-no strategy (batched) - ALL strategies in one call
@@ -27,7 +27,7 @@ export async function callLLMForAllAgents(
     return decisions;
   }
 
-  if (!GEMINI_API_KEY) {
+  if (!GROQ_API_KEY) {
     log('LLM', 'API key missing: utilizing strategy-driven fallbacks', 'warn');
     return decisions;
   }
@@ -174,7 +174,7 @@ Generate INDEPENDENT decisions for ALL agents. Each agent makes ONLY ONE decisio
     "action": "buy" | "sell" | "hold",
     "tokenType": "yes",
     "quantity": <number> (0 if hold, positive integer if buy/sell),
-    "reasoning": "<brief first-person reasoning explaining why you chose this proposal and action, max 50 words>"
+    "reasoning": "<Professional first-person reasoning (2-4 sentences, 80-150 words) explaining your trading decision. Include: market analysis, price considerations, risk assessment, and alignment with your trading philosophy. Write as a professional trader would explain their decision.>"
   },
   {
     "agentId": "agent-2",
@@ -182,7 +182,7 @@ Generate INDEPENDENT decisions for ALL agents. Each agent makes ONLY ONE decisio
     "action": "buy" | "sell" | "hold",
     "tokenType": "yes",
     "quantity": <number>,
-    "reasoning": "<brief first-person reasoning explaining why you chose this proposal and action, max 50 words>"
+    "reasoning": "<Professional first-person reasoning (2-4 sentences, 80-150 words) explaining your trading decision. Include: market analysis, price considerations, risk assessment, and alignment with your trading philosophy. Write as a professional trader would explain their decision.>"
   },
   ...
 ]
@@ -196,8 +196,9 @@ IMPORTANT RULES:
 - You HAVE ACCESS TO TOOLS. Use 'get_dia_prices' to check current asset prices if needed to make a winning decision.
 - Each decision MUST include the "strategyId" field to specify which proposal the agent chose
 - Different agents SHOULD choose different proposals based on their personalities and interests
-- Each agent's reasoning must be in FIRST PERSON and explain why they chose that specific proposal (e.g., "I'm focusing on Tech Sector Growth because..." not "Bullish Bob sees...")
-- Keep reasoning concise (max 50 words)
+- Each agent's reasoning must be PROFESSIONAL, DETAILED, and in FIRST PERSON (2-4 sentences, 80-150 words)
+- Explain your decision like a professional trader: include market analysis, price considerations, risk assessment, timing factors, and how it aligns with your trading philosophy
+- Use professional financial language and provide substantive reasoning (e.g., "I'm focusing on Tech Sector Growth because current market conditions show strong momentum, the price is below my calculated fair value, and my risk analysis indicates this aligns with my aggressive growth strategy..." not "Bullish Bob sees value")
 - CRITICAL CONSTRAINTS:
   * If action is "buy", quantity must be affordable with agent's CURRENT vUSD balance (check "CURRENT vUSD Balance" in agent info - this is the LATEST balance from blockchain)
   * If action is "sell", agent MUST have YES tokens to sell (check YES Holdings in agent info)
@@ -220,11 +221,11 @@ IMPORTANT RULES:
       3 // Max 3 tool calls for trading decisions (reduced to avoid rate limits)
     );
 
-    console.log(`[LLM] Received batch response from Gemini`);
+    console.log(`[LLM] Received batch response from Groq`);
     console.log(`[LLM] Raw LLM Response:\n${content}\n`);
 
     if (!content) {
-      console.error('[LLM] Gemini API returned no content');
+      console.error('[LLM] Groq API returned no content');
       return decisions;
     }
 
@@ -354,7 +355,7 @@ IMPORTANT RULES:
     console.log(`[LLM] Batch complete: ${decisions.size}/${agents.length} decisions generated (one per agent)\n`);
     return decisions;
   } catch (error) {
-    console.error('[LLM] Error calling Google Gemini API:', error);
+    console.error('[LLM] Error calling Groq API:', error);
     if (error instanceof Error) {
       console.error('[LLM] Error message:', error.message);
     }
@@ -371,8 +372,8 @@ export async function callLLMForYesNoStrategy(
   market: MarketState,
   marketStrategy: MarketStrategy
 ): Promise<TradeDecision | null> {
-  console.log(`\n[LLM] ${agent.personality.name} (${agent.id}) - Using Google Gemini API`);
-  console.log(`[LLM] Model: ${GEMINI_MODEL}`);
+  console.log(`\n[LLM] ${agent.personality.name} (${agent.id}) - Using Groq API`);
+  console.log(`[LLM] Model: ${GROQ_MODEL}`);
   console.log(`[LLM] Strategy: ${marketStrategy.name}`);
 
   if (isDev) {
@@ -380,7 +381,7 @@ export async function callLLMForYesNoStrategy(
     return null;
   }
 
-  if (!GEMINI_API_KEY) {
+  if (!GROQ_API_KEY) {
     console.log(`[LLM] No API key configured - falling back to default strategy`);
     return null; // No API key configured, fallback to default strategy
   }
@@ -467,7 +468,7 @@ Based on your personality, the market data, and timing context, make a trading d
   "action": "buy" | "sell" | "hold",
   "tokenType": "yes" | "no",
   "quantity": <number> (0 if hold, otherwise positive integer),
-  "reasoning": "<your reasoning as this agent, considering timing and market conditions>"
+  "reasoning": "<Professional first-person reasoning (2-4 sentences, 80-150 words) explaining your trading decision. Include: detailed market analysis, current price evaluation, risk assessment, timing considerations, and how this decision aligns with your trading philosophy. Write as a professional trader would explain their decision to a colleague.>"
 }
 
 Important constraints:
@@ -479,18 +480,18 @@ Important constraints:
 - Be true to your personality traits and trading philosophy`;
 
   try {
-    // Call Gemini via OpenAI SDK (consistent with other LLM calls)
+    // Call Groq via OpenAI SDK (consistent with other LLM calls)
     const systemPrompt = 'You are a trading agent AI. Respond only with valid JSON.';
     const fullPrompt = `${systemPrompt}\n\n${prompt}`;
 
-    console.log(`[LLM] Making API call to Gemini via OpenAI SDK...`);
-    const content = await simpleGeminiCompletion(fullPrompt);
+    console.log(`[LLM] Making API call to Groq via OpenAI SDK...`);
+    const content = await simpleGroqCompletion(fullPrompt);
 
-    console.log(`[LLM] Received response from Gemini`);
+    console.log(`[LLM] Received response from Groq`);
     console.log(`[LLM] Raw LLM Response:\n${content}\n`);
 
     if (!content) {
-      console.error('[LLM] Gemini API returned no content');
+      console.error('[LLM] Groq API returned no content');
       return null;
     }
 
@@ -565,7 +566,7 @@ Important constraints:
 
     return finalDecision;
   } catch (error) {
-    console.error('[LLM] Error calling Google Gemini API:', error);
+    console.error('[LLM] Error calling Groq API:', error);
     if (error instanceof Error) {
       console.error('[LLM] Error message:', error.message);
       console.error('[LLM] Error stack:', error.stack);
@@ -586,14 +587,14 @@ export async function generateStrategiesFromDataSources(
   const apiDataSourcesCount = 3; // Exchange Rate, Inflation, Income Tax
   const totalDataSourcesCount = dataSources.length + apiDataSourcesCount;
   console.log(`\n[LLM] Generating ${count} unique market strategies based on ${totalDataSourcesCount} trusted data sources (${dataSources.length} hardcoded + ${apiDataSourcesCount} API-based)...`);
-  console.log(`[LLM] Model: ${GEMINI_MODEL}`);
+  console.log(`[LLM] Model: ${GROQ_MODEL}`);
 
   if (isDev) {
     console.log(`[LLM] Dev mode active - using default strategies`);
     return [];
   }
 
-  if (!GEMINI_API_KEY) {
+  if (!GROQ_API_KEY) {
     console.log(`[LLM] No API key configured - using default strategies`);
     return [];
   }
@@ -636,7 +637,11 @@ Total: ${totalDataSources} data sources available.
 
 === STRATEGY REQUIREMENTS ===
 - Each strategy MUST have a clear "timeLimitDays" field (e.g., 2, 7, 30).
-- The description should be CLEAN and focus ONLY on the prediction.
+- The description should be PROFESSIONAL, DETAILED, and provide CLEAR REASONING for why this prediction matters.
+  * Include context about market conditions, trends, or economic factors
+  * Explain the significance of the prediction
+  * Use professional financial language
+  * Be specific about what will be measured and why
 - Evaluation Logic: Human-readable logic for frontend (e.g. "(SPY > 700 OR QQQ > 550)").
 - Mathematical Logic: Pure machine-readable logic for automated check.
 - Verification Source: The specific "ID" of the data source used for verification (from the list above).
@@ -646,7 +651,7 @@ Generate exactly ${count} unique RWA strategies. Respond ONLY with a JSON array 
 [
   {
     "name": "<Strategy Name>",
-    "description": "<Clean prediction description>",
+    "description": "<Professional, detailed description with clear reasoning about market conditions, trends, and why this prediction matters. Should be 2-4 sentences explaining the context and significance.>",
     "timeLimitDays": <number (e.g. 2, 5, 30)>,
     "evaluationLogic": "<Logic string with Source IDs and operators>",
     "mathematicalLogic": "<Formula like 'asset_price > target_value'>",
@@ -670,9 +675,9 @@ CRITICAL RULES:
     const systemPrompt = 'You are an expert RWA strategy generator. You create complex, verifiable market strategies based on real-time data sources with specific time horizons. Respond only with valid JSON array.';
     const fullPrompt = `${systemPrompt}\n\n${prompt}`;
 
-    console.log(`[LLM] Calling Gemini via OpenAI SDK with tool access for ${nowFormatted}...`);
+    console.log(`[LLM] Calling Groq via OpenAI SDK with tool access for ${nowFormatted}...`);
 
-    // Use OpenAI SDK with Gemini's OpenAI-compatible endpoint for proper tool support
+    // Use OpenAI SDK with Groq's OpenAI-compatible endpoint for proper tool support
     const content = await handleOpenAIToolConversation(
       fullPrompt,
       [], // No agents yet during initialization
@@ -680,10 +685,10 @@ CRITICAL RULES:
       3 // Max 3 tool calls (reduced to avoid rate limits)
     );
 
-    console.log(`[LLM] Received response from Gemini`);
+    console.log(`[LLM] Received response from Groq`);
 
     if (!content) {
-      console.error('[LLM] ❌ Gemini API returned no content');
+      console.error('[LLM] ❌ Groq API returned no content');
       return [];
     }
 
@@ -736,7 +741,7 @@ CRITICAL RULES:
     console.log(`[LLM] Generated ${strategies.length} verified RWA strategies with deadlines\n`);
     return strategies;
   } catch (error) {
-    console.error('[LLM] Error calling Google Gemini API for RWA strategy generation:', error);
+    console.error('[LLM] Error calling Groq API for RWA strategy generation:', error);
     return [];
   }
 }
@@ -754,45 +759,59 @@ export async function generateAgentPersonalities(
   traits: string[];
 }>> {
   console.log(`\n[LLM] Generating ${count} unique AI agent personalities...`);
-  console.log(`[LLM] Model: ${GEMINI_MODEL}`);
+  console.log(`[LLM] Model: ${GROQ_MODEL}`);
 
   if (isDev) {
     console.log(`[LLM] Dev mode active - using default personalities`);
     return [];
   }
 
-  if (!GEMINI_API_KEY) {
+  if (!GROQ_API_KEY) {
     console.log(`[LLM] No API key configured - using default personalities`);
     return [];
   }
 
   const prompt = `Generate ${count} diverse AI trading agent personalities as a JSON array.
+
+CRITICAL NAME REQUIREMENTS:
+- Use REALISTIC HUMAN NAMES (e.g., "Sarah Chen", "Michael Rodriguez", "Priya Patel", "James Wilson", "Emma Thompson")
+- Use common first names and last names from diverse backgrounds
+- DO NOT use cartoonish names like "Bullish Bob", "TWAP Tina", "Momentum Max", or alliterative names
+- Names should sound like real professional traders
+
 Format:
 [
   {
-    "name": "Name",
+    "name": "<Realistic Human Name>",
     "riskTolerance": "low" | "medium" | "high",
     "aggressiveness": 0.0 to 1.0,
-    "memo": "Short trading philosophy",
+    "memo": "Short trading philosophy in first person",
     "traits": ["trait1", "trait2", "trait3"]
   }
 ]
-Ensure diversity in risk and style.
-CRITICAL: Write the 'memo' in FIRST PERSON ("I belief...", "My strategy..."), describing yourself as an individual. Do NOT use "We".`;
+
+Ensure diversity in:
+- Names (different cultural backgrounds, genders)
+- Risk tolerance levels
+- Trading styles and strategies
+
+CRITICAL: 
+- Write the 'memo' in FIRST PERSON ("I believe...", "My strategy..."), describing yourself as an individual. Do NOT use "We".
+- Use professional, realistic trading philosophies that sound like real human traders.`;
 
   try {
     const systemPrompt = 'You are generating diverse AI trading agent personalities. Respond only with valid JSON array.';
     const fullPrompt = `${systemPrompt}\n\n${prompt}`;
 
-    console.log(`[LLM] Calling Gemini via OpenAI SDK to generate agent personalities...`);
+    console.log(`[LLM] Calling Groq via OpenAI SDK to generate agent personalities...`);
 
     // Use the OpenAI SDK wrapper which shares the API key
-    const content = await simpleGeminiCompletion(fullPrompt);
+    const content = await simpleGroqCompletion(fullPrompt);
 
-    console.log(`[LLM] ✅ Received response from Gemini`);
+    console.log(`[LLM] ✅ Received response from Groq`);
 
     if (!content) {
-      console.error('[LLM] ❌ Gemini API returned no content');
+      console.error('[LLM] ❌ Groq API returned no content');
       return [];
     }
 
@@ -843,7 +862,7 @@ CRITICAL: Write the 'memo' in FIRST PERSON ("I belief...", "My strategy..."), de
 
     return personalities;
   } catch (error) {
-    console.error('[LLM] ❌ Error calling Google Gemini API for personality generation:', error);
+    console.error('[LLM] ❌ Error calling Groq API for personality generation:', error);
     if (error instanceof Error) {
       console.error('[LLM] Error message:', error.message);
     }

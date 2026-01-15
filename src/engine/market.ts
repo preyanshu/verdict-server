@@ -28,6 +28,7 @@ export function initializeMarket(): MarketState {
     tradeQueue: [], // Empty trade queue
     lastBatchLLMCallTime: null, // No batch LLM call made yet
     isExecutingTrades: false, // Not executing trades initially
+    isExecutingTradeBatch: false, // Not executing a trade batch initially
     isMakingBatchLLMCall: false, // No batch LLM call in progress initially
   };
 }
@@ -360,9 +361,15 @@ export async function syncReservesFromChain(marketState: MarketState): Promise<v
     const yes = parseFloat(ethers.formatUnits(reserves.yesReserve, 18));
 
     // On-chain: reserves.yes = YES tokens, reserves.vUSDC = vUSDC tokens
+    // Note: In the backend, we store:
+    // - yesToken.tokenReserve = YES tokens (from contract's reserveB)
+    // - noToken.tokenReserve = vUSDC tokens (from contract's reserveA)
+    // This matches the contract's pool structure where:
+    // - reserveA = vUSDC
+    // - reserveB = YES tokens
     if (yes > 0 || vUSDC > 0) {
-      strategy.yesToken.tokenReserve = yes;
-      strategy.noToken.tokenReserve = vUSDC;
+      strategy.yesToken.tokenReserve = yes;  // YES tokens (contract's reserveB)
+      strategy.noToken.tokenReserve = vUSDC;  // vUSDC (contract's reserveA, stored as "noToken" for compatibility)
 
       // Update price history from chain directly for better accuracy
       const { getYESPriceFromChain } = await import('../blockchain');

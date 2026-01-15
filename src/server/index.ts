@@ -211,17 +211,30 @@ export function createServer(
 
       // Get market state
       if (url.pathname === '/api/market' && req.method === 'GET') {
-        const { getYESPrice, getNOPrice } = await import('../engine/amm');
-        const enrichedStrategies = marketState.strategies.map((s) => ({
-          ...s,
-          yesPrice: getYESPrice(s.yesToken.tokenReserve, s.noToken.tokenReserve),
-          noPrice: getNOPrice(s.yesToken.tokenReserve, s.noToken.tokenReserve),
-        }));
+        const { getYESPrice, getNOPrice, getYESPriceInVUSD } = await import('../engine/amm');
+        const enrichedStrategies = marketState.strategies.map((s) => {
+          // Note: yesPrice/noPrice are probabilities (0-1), not vUSD prices
+          const yesPriceProb = getYESPrice(s.yesToken.tokenReserve, s.noToken.tokenReserve);
+          const noPriceProb = getNOPrice(s.yesToken.tokenReserve, s.noToken.tokenReserve);
+          // Calculate actual vUSD price per YES token for swaps
+          const yesPriceVUSD = getYESPriceInVUSD(s.noToken.tokenReserve, s.yesToken.tokenReserve);
+          return {
+            ...s,
+            yesPrice: yesPriceProb, // Probability (0-1)
+            noPrice: noPriceProb, // Probability (0-1)
+            yesPriceVUSD: yesPriceVUSD, // Actual vUSD price per YES token for swaps
+          };
+        });
+
+        // Market is active if roundEndTime hasn't been reached (time-based only)
+        const now = Date.now();
+        const isActive = marketState.roundEndTime > 0 && now < marketState.roundEndTime && marketState.roundStartTime > 0;
 
         return new Response(
           JSON.stringify({
             ...marketState,
             strategies: enrichedStrategies,
+            isActive: isActive, // Explicitly include isActive based on time only
           }),
           {
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -561,6 +574,8 @@ export function createServer(
             // Set roundStartTime FIRST to prevent concurrent calls
             marketState.roundStartTime = Date.now();
             marketState.roundEndTime = marketState.roundStartTime + marketState.roundDuration;
+            // Set isExecutingTrades to true for the entire round duration
+            marketState.isExecutingTrades = true;
 
             // New round starting - reset agent balances to 100 vUSDC
             if (agents.length > 0) {

@@ -139,31 +139,31 @@ export async function generateAndSetAgents(agents: Agent[]): Promise<void> {
     log('Agents', 'Initializing default agent personalities');
     personalities = [
       {
-        name: 'Bullish Bob',
+        name: 'Sarah Chen',
         riskTolerance: 'high',
         aggressiveness: 0.8,
-        memo: 'Always optimistic. Believes in long-term growth and buys on any dip.',
+        memo: 'I believe in long-term growth and market resilience. I buy on dips and hold through volatility, focusing on fundamental value.',
         traits: ['optimistic', 'risk-taker', 'trend-follower'],
       },
       {
-        name: 'TWAP Tina',
+        name: 'Michael Rodriguez',
         riskTolerance: 'medium',
         aggressiveness: 0.5,
-        memo: 'Patient trader using Time-Weighted Average Price. Splits orders over time to minimize market impact.',
+        memo: 'I use systematic approaches and time-weighted strategies to minimize market impact. Patience and discipline guide my decisions.',
         traits: ['patient', 'systematic', 'risk-aware'],
       },
       {
-        name: 'Momentum Max',
+        name: 'Priya Patel',
         riskTolerance: 'high',
         aggressiveness: 0.9,
-        memo: 'Rides the wave! Follows strong trends and jumps on momentum. Quick to enter and exit.',
+        memo: 'I follow momentum and trends closely. When I see strong signals, I act quickly to capitalize on market movements.',
         traits: ['impulsive', 'trend-chaser', 'volatile'],
       },
       {
-        name: 'Mean Reversion Mary',
+        name: 'James Wilson',
         riskTolerance: 'low',
         aggressiveness: 0.3,
-        memo: 'Believes prices return to mean. Buys low, sells high. Contrarian approach.',
+        memo: 'I believe markets revert to mean values. I buy when prices are low and sell when they peak, using a contrarian approach.',
         traits: ['contrarian', 'cautious', 'value-oriented'],
       },
     ];

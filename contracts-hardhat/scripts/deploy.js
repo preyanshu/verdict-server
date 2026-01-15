@@ -2,22 +2,38 @@ const hre = require("hardhat");
 require("dotenv").config({ path: "../.env" });
 
 async function main() {
-    console.log("🚀 Deploying Verdict Prediction Market to Mantle Testnet\n");
+    // Detect network from Hardhat config
+    const networkName = hre.network.name;
+    const networkConfig = hre.config.networks[networkName];
+    const chainId = networkConfig?.chainId || hre.network.config.chainId;
+    
+    // Network-specific info
+    const networkInfo = {
+        mantleTestnet: { symbol: "MNT", faucet: "https://faucet.sepolia.mantle.xyz/" },
+        arbitrumSepolia: { symbol: "ETH", faucet: "https://faucet.quicknode.com/arbitrum/sepolia" },
+        hardhat: { symbol: "ETH", faucet: null }
+    };
+    
+    const info = networkInfo[networkName] || { symbol: "ETH", faucet: null };
+    
+    console.log(`🚀 Deploying Verdict Prediction Market to ${networkName} (Chain ID: ${chainId})\n`);
 
     const [deployer] = await hre.ethers.getSigners();
     console.log("Deployer:", deployer.address);
     
     const balance = await hre.ethers.provider.getBalance(deployer.address);
-    console.log("Balance:", hre.ethers.formatEther(balance), "MNT\n");
+    console.log("Balance:", hre.ethers.formatEther(balance), info.symbol, "\n");
 
-    if (balance === 0n) {
-        throw new Error("❌ No MNT balance! Get testnet MNT from: https://faucet.sepolia.mantle.xyz/");
+    if (balance === 0n && info.faucet) {
+        throw new Error(`❌ No ${info.symbol} balance! Get testnet tokens from: ${info.faucet}`);
     }
 
     const backendSigner = process.env.BACKEND_ADDRESS || deployer.address;
     console.log("Backend Signer:", backendSigner, "\n");
 
-    const gasSettings = {
+    // Network-specific gas settings
+    // Arbitrum uses provider-estimated gas prices, Mantle uses fixed 0.02 gwei
+    const gasSettings = networkName === 'arbitrumSepolia' ? {} : {
         gasPrice: hre.ethers.parseUnits("0.02", "gwei"),
     };
 
@@ -74,7 +90,7 @@ async function main() {
     // ========== Setup permissions BEFORE transferring ownership ==========
     console.log("\n🔧 Setting up permissions...\n");
 
-    const setupGasOpts = {
+    const setupGasOpts = networkName === 'arbitrumSepolia' ? {} : {
         gasPrice: hre.ethers.parseUnits("0.02", "gwei"),
     };
 
@@ -114,7 +130,7 @@ async function main() {
     // ========== Transfer ownership to Router ==========
     console.log("\n🔐 Transferring ownership to Router...\n");
 
-    const ownershipGasOpts = {
+    const ownershipGasOpts = networkName === 'arbitrumSepolia' ? {} : {
         gasPrice: hre.ethers.parseUnits("0.02", "gwei"),
     };
 
@@ -151,7 +167,12 @@ async function main() {
   Router:   ${routerAddress}
 `);
 
-    const explorerUrl = process.env.BLOCK_EXPLORER_URL || "https://sepolia.mantlescan.xyz/";
+    const explorerUrls = {
+        mantleTestnet: "https://sepolia.mantlescan.xyz/",
+        arbitrumSepolia: "https://sepolia.arbiscan.io/",
+        hardhat: "https://etherscan.io/"
+    };
+    const explorerUrl = explorerUrls[networkName] || process.env.BLOCK_EXPLORER_URL || "https://etherscan.io/";
     console.log(`🔗 Block Explorer: ${explorerUrl}address/${routerAddress}`);
     
     console.log("\n📝 Update your .env file:");

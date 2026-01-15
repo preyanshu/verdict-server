@@ -1,8 +1,9 @@
 /**
- * OpenAI SDK Tools for Gemini via OpenAI-Compatible API
+ * OpenAI SDK Tools for Groq via OpenAI-Compatible API
  * 
- * This uses the OpenAI SDK with Gemini's OpenAI-compatible endpoint
+ * This uses the OpenAI SDK with Groq's OpenAI-compatible endpoint
  * for proper tool/function calling support.
+ * Groq supports function calling and is compatible with OpenAI's API format.
  */
 
 import OpenAI from 'openai';
@@ -21,13 +22,13 @@ import {
 
 import { config } from '../core/config';
 
-// Initialize OpenAI client with Gemini's OpenAI-compatible endpoint
-const GEMINI_API_KEY = config.gemini.apiKey;
-const GEMINI_MODEL = config.gemini.model;
+// Initialize OpenAI client with Groq's OpenAI-compatible endpoint
+const GROQ_API_KEY = config.groq.apiKey;
+const GROQ_MODEL = config.groq.model;
 
 export const openai = new OpenAI({
-    apiKey: GEMINI_API_KEY,
-    baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+    apiKey: GROQ_API_KEY,
+    baseURL: 'https://api.groq.com/openai/v1',
     maxRetries: 0, // Disable built-in SDK retries to ensure immediate fallback as requested
 });
 
@@ -59,7 +60,7 @@ async function fetchDIAData(endpoint: string): Promise<DIADataResponse | null> {
 }
 
 /**
- * OpenAI-format tool definitions for Gemini
+ * OpenAI-format tool definitions for Groq
  */
 export const OPENAI_TRADING_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     {
@@ -156,7 +157,7 @@ export async function executeOpenAIToolCall(
 }
 
 /**
- * Handle multi-turn conversation with OpenAI SDK + Gemini
+ * Handle multi-turn conversation with OpenAI SDK + Groq
  */
 export async function handleOpenAIToolConversation(
     prompt: string,
@@ -177,11 +178,11 @@ export async function handleOpenAIToolConversation(
 
     while (iteration < maxIterations) {
         iteration++;
-        console.log(`📡 [Iteration ${iteration}/${maxIterations}] Calling Gemini via OpenAI SDK...`);
+        console.log(`📡 [Iteration ${iteration}/${maxIterations}] Calling Groq via OpenAI SDK...`);
 
         try {
             const response = await openai.chat.completions.create({
-                model: GEMINI_MODEL,
+                model: GROQ_MODEL,
                 messages,
                 tools: OPENAI_TRADING_TOOLS,
                 tool_choice: 'auto'
@@ -266,16 +267,16 @@ export async function handleOpenAIToolConversation(
 /**
  * Simple chat completion without tools
  */
-export async function simpleGeminiCompletion(prompt: string): Promise<string | null> {
+export async function simpleGroqCompletion(prompt: string): Promise<string | null> {
     try {
         const response = await openai.chat.completions.create({
-            model: GEMINI_MODEL,
+            model: GROQ_MODEL,
             messages: [{ role: 'user', content: prompt }]
         });
 
         return response.choices[0]?.message?.content || null;
     } catch (error) {
-        console.error('[Gemini Completion] Error:', error);
+        console.error('[Groq Completion] Error:', error);
         return null;
     }
 }

@@ -50,7 +50,7 @@ export function executeYesNoStrategyFallback(
       tokenType: 'yes',
       quantity,
       price: yesPrice,
-      reasoning: `${personality.name} sees value in ${marketStrategy.name} YES token at ${yesPrice.toFixed(4)} (Avg: ${avgPrice.toFixed(4)}). ${personality.memo}`,
+      reasoning: `I'm buying YES tokens for ${marketStrategy.name} because the current price of ${yesPrice.toFixed(4)} is below the average price of ${avgPrice.toFixed(4)}, indicating an undervalued opportunity. Based on my analysis, this represents a favorable entry point that aligns with my trading approach. ${personality.memo}`,
     };
   }
 
@@ -63,7 +63,7 @@ export function executeYesNoStrategyFallback(
       tokenType: 'yes',
       quantity,
       price: yesPrice,
-      reasoning: `${personality.name} taking profits on ${marketStrategy.name} YES token at ${yesPrice.toFixed(4)} (Avg: ${avgPrice.toFixed(4)}). ${personality.memo}`,
+      reasoning: `I'm taking profits on ${marketStrategy.name} YES tokens at ${yesPrice.toFixed(4)}, which is above the average price of ${avgPrice.toFixed(4)}. This price action suggests the position has reached an overvalued level relative to historical patterns, making it an appropriate time to realize gains. ${personality.memo}`,
     };
   }
 
@@ -74,7 +74,7 @@ export function executeYesNoStrategyFallback(
     tokenType: 'yes',
     quantity: 0,
     price: yesPrice,
-    reasoning: `${personality.name} holding. Price ${yesPrice.toFixed(4)} is near average ${avgPrice.toFixed(4)}. ${personality.memo}`,
+    reasoning: `I'm maintaining my current position on ${marketStrategy.name}. The current price of ${yesPrice.toFixed(4)} is near the average price of ${avgPrice.toFixed(4)}, indicating neither a clear buying nor selling opportunity. I'll wait for more favorable market conditions before adjusting my position. ${personality.memo}`,
   };
 }
 
@@ -129,7 +129,7 @@ export function executeTWAPStrategy(
         tokenType: 'yes',
         quantity,
         price: yesPrice,
-        reasoning: `${personality.name} TWAP: ${yesTWAP.toFixed(4)}, current: ${yesPrice.toFixed(4)}. Buying YES below TWAP. ${personality.memo}`,
+        reasoning: `I'm buying YES tokens because the current price of ${yesPrice.toFixed(4)} is below the Time-Weighted Average Price (TWAP) of ${yesTWAP.toFixed(4)}, indicating the asset is undervalued relative to recent trading patterns. This deviation presents a favorable entry opportunity that aligns with my systematic trading approach. ${personality.memo}`,
       };
     }
   }
@@ -145,7 +145,7 @@ export function executeTWAPStrategy(
         tokenType: 'yes',
         quantity,
         price: yesPrice,
-        reasoning: `${personality.name} TWAP: ${yesTWAP.toFixed(4)}, current: ${yesPrice.toFixed(4)}. Selling YES above TWAP. ${personality.memo}`,
+        reasoning: `I'm selling YES tokens to realize profits as the current price of ${yesPrice.toFixed(4)} exceeds the Time-Weighted Average Price (TWAP) of ${yesTWAP.toFixed(4)}. This positive deviation suggests the position has appreciated beyond its recent average, making this an appropriate time to take gains according to my systematic trading methodology. ${personality.memo}`,
       };
     }
   }
@@ -162,7 +162,7 @@ export function executeTWAPStrategy(
         tokenType: 'yes',
         quantity,
         price: yesPrice,
-        reasoning: `${personality.name} making initial trade to establish position. ${personality.memo}`,
+        reasoning: `I'm making an initial trade to establish a position in this market. With limited historical data available, I'm entering the market to begin building my position and gather more information about price dynamics. ${personality.memo}`,
       };
     }
   }
@@ -174,7 +174,7 @@ export function executeTWAPStrategy(
     tokenType: 'yes',
     quantity: 0,
     price: yesPrice,
-    reasoning: `${personality.name} YES price aligned with TWAP. ${personality.memo}`,
+    reasoning: `I'm maintaining my current position as the YES token price of ${yesPrice.toFixed(4)} is closely aligned with the Time-Weighted Average Price (TWAP) of ${yesTWAP.toFixed(4)}. The minimal deviation suggests the market is fairly valued, so I'll wait for a clearer signal before adjusting my position. ${personality.memo}`,
   };
 }
 
@@ -204,7 +204,7 @@ export function executeMomentumStrategy(
           tokenType: 'yes',
           quantity,
           price: yesPrice,
-          reasoning: `${personality.name} making initial momentum trade on YES. ${personality.memo}`,
+          reasoning: `I'm making an initial momentum trade on YES tokens to establish a position. With limited price history available, I'm entering the market to begin tracking momentum patterns and build my trading position. ${personality.memo}`,
         };
       }
     }
@@ -215,7 +215,7 @@ export function executeMomentumStrategy(
       tokenType: 'yes',
       quantity: 0,
       price: yesPrice,
-      reasoning: `${personality.name} needs more data for momentum.`,
+      reasoning: `I'm holding my position as I need more historical price data to accurately assess momentum trends. Without sufficient data points, I cannot confidently determine the direction and strength of price movements, so I'll wait for more market activity before making a trading decision.`,
     };
   }
 
@@ -240,7 +240,7 @@ export function executeMomentumStrategy(
       tokenType: 'yes',
       quantity,
       price: yesPrice,
-      reasoning: `${personality.name} detected strong upward momentum (${(momentum * 100).toFixed(2)}%) in YES. ${personality.memo}`,
+      reasoning: `I'm buying YES tokens because I've detected strong upward momentum of ${(momentum * 100).toFixed(2)}% in the price action. This positive momentum indicates a favorable trend that aligns with my trading strategy of following market movements. I'm capitalizing on this trend to position myself for potential gains. ${personality.memo}`,
     };
   }
 
@@ -254,7 +254,7 @@ export function executeMomentumStrategy(
       tokenType: 'yes',
       quantity,
       price: yesPrice,
-      reasoning: `${personality.name} detected downward momentum (${(momentum * 100).toFixed(2)}%) in YES. ${personality.memo}`,
+      reasoning: `I'm selling YES tokens because I've detected downward momentum of ${(momentum * 100).toFixed(2)}% in the price action. This negative momentum suggests a weakening trend, so I'm reducing my exposure to protect my capital and potentially re-enter at more favorable levels. ${personality.memo}`,
     };
   }
 
@@ -265,7 +265,7 @@ export function executeMomentumStrategy(
     tokenType: 'yes',
     quantity: 0,
     price: yesPrice,
-    reasoning: `${personality.name} no clear momentum signal. ${personality.memo}`,
+    reasoning: `I'm maintaining my current position as there's no clear momentum signal in the market. The price movements are insufficient to indicate a strong directional trend, so I'll wait for more definitive momentum before adjusting my position. ${personality.memo}`,
   };
 }
 
@@ -293,7 +293,7 @@ export function executeMeanReversionStrategy(
           tokenType: 'yes',
           quantity,
           price: yesPrice,
-          reasoning: `${personality.name} making initial mean reversion trade on YES. ${personality.memo}`,
+          reasoning: `I'm making an initial mean reversion trade on YES tokens to establish a position. With limited historical data, I'm entering the market to begin tracking price patterns relative to the mean and build my trading position. ${personality.memo}`,
         };
       }
     }
@@ -317,7 +317,7 @@ export function executeMeanReversionStrategy(
       tokenType: 'yes',
       quantity,
       price: yesPrice,
-      reasoning: `${personality.name} YES price ${yesPrice.toFixed(4)} is below mean ${mean.toFixed(4)} (z-score: ${zScore.toFixed(2)}). ${personality.memo}`,
+      reasoning: `I'm buying YES tokens because the current price of ${yesPrice.toFixed(4)} is below the mean price of ${mean.toFixed(4)}, with a z-score of ${zScore.toFixed(2)} indicating the asset is undervalued. This represents a mean reversion opportunity where I expect the price to return toward its historical average, making this an attractive entry point. ${personality.memo}`,
     };
   }
 
@@ -332,7 +332,7 @@ export function executeMeanReversionStrategy(
       tokenType: 'yes',
       quantity,
       price: yesPrice,
-      reasoning: `${personality.name} YES price ${yesPrice.toFixed(4)} is above mean ${mean.toFixed(4)} (z-score: ${zScore.toFixed(2)}). ${personality.memo}`,
+      reasoning: `I'm selling YES tokens because the current price of ${yesPrice.toFixed(4)} is above the mean price of ${mean.toFixed(4)}, with a z-score of ${zScore.toFixed(2)} indicating the asset is overvalued. Based on mean reversion principles, I expect the price to decline toward its historical average, so I'm taking profits at this elevated level. ${personality.memo}`,
     };
   }
 
@@ -343,7 +343,7 @@ export function executeMeanReversionStrategy(
     tokenType: 'yes',
     quantity: 0,
     price: yesPrice,
-    reasoning: `${personality.name} price near mean. ${personality.memo}`,
+    reasoning: `I'm maintaining my current position as the YES token price of ${yesPrice.toFixed(4)} is near the mean price of ${mean.toFixed(4)}. With minimal deviation from the mean, there's no clear mean reversion opportunity at this time, so I'll wait for a more significant price deviation before adjusting my position. ${personality.memo}`,
   };
 }
 

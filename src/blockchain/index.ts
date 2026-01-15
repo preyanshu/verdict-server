@@ -2,7 +2,7 @@ import { ethers, BaseContract, JsonRpcProvider, Wallet, ContractTransactionRespo
 import { config } from '../core/config';
 import { getAgentSigner } from '../agents';
 import type { Agent, MarketStrategy } from '../core/types';
-import routerABI from '../../contracts/abi.json';
+import routerArtifact from '../../abi/router.json';
 
 /**
  * Interfaces for Verdict Prediction Market Contracts
@@ -72,6 +72,12 @@ export let backendSigner: Wallet | null = null;
 export let routerContract: VerdictRouter | null = null;
 export let vUSDCContract: ERC20 | null = null;
 
+// Provider fallback management
+let currentRpcIndex = 0;
+let rpcUrls: string[] = [];
+let lastProviderSwitch = 0;
+const PROVIDER_SWITCH_COOLDOWN = 60000; // 60 seconds before switching back
+
 /**
  * Type-safe accessors
  */
@@ -96,18 +102,146 @@ export function getVUSDC(): ERC20 {
 }
 
 /**
+ * Get gas price for current network
+ * Returns network-specific gas price or undefined to let provider estimate
+ */
+export function getGasPrice(): bigint | undefined {
+    if (config.blockchain.gasPrice !== undefined) {
+        return BigInt(config.blockchain.gasPrice);
+    }
+    return undefined; // Let provider estimate
+}
+
+/**
+ * Get gas price override for transactions
+ * Returns an object with gasPrice if network specifies it, otherwise empty object
+ */
+export function getGasPriceOverride(): { gasPrice?: bigint } {
+    const gasPrice = getGasPrice();
+    return gasPrice !== undefined ? { gasPrice } : {};
+}
+
+/**
+ * Get network-specific gas funding amounts for agents
+ * Returns threshold and amount based on network (Arbitrum needs less, Mantle/Hardhat can use more)
+ */
+export function getAgentGasFunding(): { threshold: bigint; amount: bigint } {
+    const network = config.blockchain.network;
+    
+    if (network === 'arbitrum') {
+        // Arbitrum Sepolia: Use smaller amounts (0.005 ETH threshold, 0.01 ETH funding)
+        // User only has ~0.2 ETH total, so we need to be conservative
+        return {
+            threshold: ethers.parseEther("0.005"), // 0.005 ETH minimum
+            amount: ethers.parseEther("0.01")       // 0.01 ETH per agent (4 agents = 0.04 ETH total)
+        };
+    } else if (network === 'mantle') {
+        // Mantle: Use MNT amounts (cheaper)
+        return {
+            threshold: ethers.parseEther("0.1"),   // 0.1 MNT minimum
+            amount: ethers.parseEther("0.5")        // 0.5 MNT per agent
+        };
+    } else {
+        // Hardhat or default: Use ETH amounts
+        return {
+            threshold: ethers.parseEther("0.1"),   // 0.1 ETH minimum
+            amount: ethers.parseEther("0.5")        // 0.5 ETH per agent
+        };
+    }
+}
+
+/**
+ * Switch to fallback RPC provider
+ */
+async function switchToFallbackProvider(): Promise<boolean> {
+    const network = config.blockchain.network as keyof typeof config.blockchain;
+    const networkConfig = (config.blockchain as any).networkConfig;
+    
+    // Get fallback URLs from config
+    const fallbackUrls = (networkConfig?.fallbackRpcUrls as string[]) || [];
+    if (fallbackUrls.length === 0) {
+        console.log('⚠️  No fallback RPC URLs configured');
+        return false;
+    }
+    
+    const now = Date.now();
+    if (now - lastProviderSwitch < PROVIDER_SWITCH_COOLDOWN) {
+        console.log(`⏳ Provider switch cooldown active (${Math.ceil((PROVIDER_SWITCH_COOLDOWN - (now - lastProviderSwitch)) / 1000)}s remaining)`);
+        return false;
+    }
+    
+    // Try next fallback URL
+    currentRpcIndex = (currentRpcIndex + 1) % (fallbackUrls.length + 1);
+    const rpcUrl = currentRpcIndex === 0 
+        ? (config.blockchain.rpcUrl || '')
+        : fallbackUrls[currentRpcIndex - 1];
+    
+    if (!rpcUrl) {
+        console.error('❌ No RPC URL available');
+        return false;
+    }
+    
+    console.log(`🔄 Switching to fallback RPC ${currentRpcIndex > 0 ? `(${currentRpcIndex}/${fallbackUrls.length})` : '(primary)'}: ${rpcUrl.substring(0, 50)}...`);
+    
+    try {
+        const newProvider = new JsonRpcProvider(rpcUrl);
+        // Test the provider
+        await newProvider.getBlockNumber();
+        
+        // Update provider and signer
+        provider = newProvider;
+        backendSigner = new Wallet(config.blockchain.backendPrivateKey, provider);
+        routerContract = new ethers.Contract(ROUTER_ADDRESS, routerArtifact.abi, backendSigner) as unknown as VerdictRouter;
+        
+        lastProviderSwitch = now;
+        console.log(`✅ Switched to fallback provider successfully`);
+        return true;
+    } catch (error: any) {
+        console.error(`❌ Failed to switch to fallback provider:`, error?.message);
+        return false;
+    }
+}
+
+/**
+ * Check if error is rate limit related and switch provider if needed
+ */
+export async function handleRateLimitError(error: any): Promise<boolean> {
+    const isRateLimit = error?.code === 429 || 
+                       error?.message?.includes('compute units') || 
+                       error?.message?.includes('rate limit') ||
+                       error?.message?.includes('exceeded');
+    
+    if (isRateLimit) {
+        console.log('⚠️  Rate limit detected, attempting to switch to fallback RPC...');
+        return await switchToFallbackProvider();
+    }
+    
+    return false;
+}
+
+/**
  * Initialize blockchain connection
  */
 export async function initBlockchain(): Promise<boolean> {
     try {
+        // Setup RPC URLs list (primary + fallbacks)
+        const network = config.blockchain.network as keyof typeof config.blockchain;
+        const networkConfig = (config.blockchain as any).networkConfig;
+        const fallbackUrls = (networkConfig?.fallbackRpcUrls as string[]) || [];
+        rpcUrls = [config.blockchain.rpcUrl, ...fallbackUrls];
+        currentRpcIndex = 0;
+        
         provider = new JsonRpcProvider(config.blockchain.rpcUrl);
 
         // Use backend private key from config (reads from .env)
         backendSigner = new Wallet(config.blockchain.backendPrivateKey, provider);
 
-        routerContract = new ethers.Contract(ROUTER_ADDRESS, routerABI, backendSigner) as unknown as VerdictRouter;
+        routerContract = new ethers.Contract(ROUTER_ADDRESS, routerArtifact.abi, backendSigner) as unknown as VerdictRouter;
 
         console.log('Blockchain initialized');
+        console.log(`Network: ${config.blockchain.networkName} (${config.blockchain.network})`);
+        console.log(`Chain ID: ${config.blockchain.chainId}`);
+        console.log(`RPC: ${config.blockchain.rpcUrl}`);
         console.log(`Router: ${ROUTER_ADDRESS}`);
 
         const contracts = await routerContract.getDeployedContracts();
@@ -145,9 +279,9 @@ export async function registerAgentOnChain(agent: Agent): Promise<{ success: boo
         const signer = getBackendSigner();
         console.log(`Registering agent ${agent.personality.name} (${agent.wallet.address})...`);
 
-        const gasPrice = ethers.parseUnits("0.02", "gwei");
+        const gasPriceOverride = getGasPriceOverride();
         const nonce = await signer.getNonce('pending');
-        const tx = await router.registerAgent(agent.wallet.address, { nonce, gasPrice });
+        const tx = await router.registerAgent(agent.wallet.address, { nonce, ...gasPriceOverride });
         await tx.wait();
         console.log(`Agent registered`);
 
@@ -198,37 +332,40 @@ export async function registerAllAgentsBatch(agentAddresses: string[]): Promise<
         console.log(`\nRegistering ${agentAddresses.length} agents on-chain via batch transaction...`);
         
         // Use sendWithFreshNonce to handle nonce properly
+        const gasPriceOverride = getGasPriceOverride();
         const tx = await sendWithFreshNonce(signer, (nonce) =>
             router.registerAgentsBatch(agentAddresses, {
                 nonce,
-                gasPrice: ethers.parseUnits("0.02", "gwei")
+                ...gasPriceOverride
             })
         );
         await tx.wait();
 
         console.log(`✅ Successfully registered ${agentAddresses.length} agents in batch`);
         
-        // Fund all agents with native MNT for gas (they need this to make transactions)
-        console.log(`\nFunding agents with native MNT for gas...`);
-        const GAS_THRESHOLD = ethers.parseEther("0.1"); // Minimum gas balance
-        const GAS_AMOUNT = ethers.parseEther("0.5"); // Amount to send
+        // Fund all agents with native tokens for gas (they need this to make transactions)
+        const gasFunding = getAgentGasFunding();
+        console.log(`\nFunding agents with native ${config.blockchain.currencySymbol} for gas...`);
+        console.log(`   Threshold: ${ethers.formatEther(gasFunding.threshold)} ${config.blockchain.currencySymbol}`);
+        console.log(`   Amount per agent: ${ethers.formatEther(gasFunding.amount)} ${config.blockchain.currencySymbol}`);
         
         for (const address of agentAddresses) {
             try {
                 const balance = await prov.getBalance(address);
-                if (balance < GAS_THRESHOLD) {
+                if (balance < gasFunding.threshold) {
+                    const gasPriceOverride = getGasPriceOverride();
                     const gasTx = await sendWithFreshNonce(signer, (nonce) =>
                         signer.sendTransaction({
                             to: address,
-                            value: GAS_AMOUNT,
+                            value: gasFunding.amount,
                             nonce,
-                            gasPrice: ethers.parseUnits("0.02", "gwei")
+                            ...gasPriceOverride
                         })
                     );
                     await gasTx.wait();
-                    console.log(`   ✅ Funded ${address.substring(0, 10)}... with ${ethers.formatEther(GAS_AMOUNT)} MNT`);
+                    console.log(`   ✅ Funded ${address.substring(0, 10)}... with ${ethers.formatEther(gasFunding.amount)} ${config.blockchain.currencySymbol}`);
                 } else {
-                    console.log(`   ⏭️  ${address.substring(0, 10)}... already has sufficient gas (${ethers.formatEther(balance)} MNT)`);
+                    console.log(`   ⏭️  ${address.substring(0, 10)}... already has sufficient gas (${ethers.formatEther(balance)} ${config.blockchain.currencySymbol})`);
                 }
                 // Small delay to avoid nonce issues
                 await new Promise(resolve => setTimeout(resolve, 500));
@@ -263,10 +400,30 @@ async function sendWithFreshNonceForAgent(
             const address = await agentSigner.getAddress();
             const nonce = await prov.getTransactionCount(address, 'pending');
             const tx = await fn(nonce);
-            await tx.wait();
+            
+            // Wait with 60s timeout to prevent hanging on slow networks
+            await Promise.race([
+                tx.wait(),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Transaction timeout after 60s')), 60000))
+            ]);
+            
             await new Promise(resolve => setTimeout(resolve, 500));
             return tx;
         } catch (error: any) {
+            // Handle rate limit errors - try switching provider first
+            if (error?.code === 429 || error?.message?.includes('compute units') || error?.message?.includes('rate limit') || error?.message?.includes('exceeded')) {
+                const switched = await handleRateLimitError(error);
+                if (switched && attempt < maxRetries - 1) {
+                    // Provider switched, retry immediately
+                    continue;
+                }
+                // If switch failed or last attempt, use exponential backoff
+                const backoffDelay = Math.min(2000 * Math.pow(2, attempt), 10000); // Max 10s
+                console.log(`   ⏳ Rate limit hit, waiting ${backoffDelay}ms before retry ${attempt + 1}/${maxRetries}...`);
+                await new Promise(resolve => setTimeout(resolve, backoffDelay));
+                if (attempt < maxRetries - 1) continue;
+            }
+            
             if (attempt === maxRetries - 1) throw error;
             if (error.code === 'NONCE_EXPIRED' || error.code === 'REPLACEMENT_UNDERPRICED' || error.message?.includes('nonce') || error.message?.includes('replacement')) {
                 await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
@@ -299,10 +456,11 @@ export async function resetAgentBalancesTo100(agents: Agent[]): Promise<{ succes
         const agentAddresses = agents.map(agent => agent.wallet.address);
 
         // Use batch contract function - atomic, single transaction, handles all agents
+        const gasPriceOverride = getGasPriceOverride();
         const tx = await sendWithFreshNonce(signer, (nonce) =>
             router.resetAgentsBalanceTo100Batch(agentAddresses, {
                 nonce,
-                gasPrice: ethers.parseUnits("0.02", "gwei")
+                ...gasPriceOverride
             })
         );
         await tx.wait();
@@ -310,32 +468,44 @@ export async function resetAgentBalancesTo100(agents: Agent[]): Promise<{ succes
         console.log(`✅ Balance reset complete for ${agents.length} agents in single transaction`);
         console.log(`   Transaction: ${tx.hash}`);
         
-        // Refill gas for agents who need it (they may have used gas during trading)
-        console.log(`\nChecking and refilling gas for agents...`);
+        // Refill gas for agents who need it (only if balance is below threshold)
+        console.log(`\nChecking agent gas balances...`);
         const prov = getProvider();
-        const GAS_THRESHOLD = ethers.parseEther("0.1");
-        const GAS_AMOUNT = ethers.parseEther("0.5");
+        const gasFunding = getAgentGasFunding();
         
+        let refillCount = 0;
         for (const agent of agents) {
             try {
                 const balance = await prov.getBalance(agent.wallet.address);
-                if (balance < GAS_THRESHOLD) {
+                console.log(`   📊 ${agent.personality.name} gas balance: ${ethers.formatEther(balance)} ${config.blockchain.currencySymbol} (threshold: ${ethers.formatEther(gasFunding.threshold)})`);
+                
+                if (balance < gasFunding.threshold) {
+                    console.log(`   ⚠️  ${agent.personality.name} below threshold, refilling...`);
+                    const gasPriceOverride = getGasPriceOverride();
                     const gasTx = await sendWithFreshNonce(signer, (nonce) =>
                         signer.sendTransaction({
                             to: agent.wallet.address,
-                            value: GAS_AMOUNT,
+                            value: gasFunding.amount,
                             nonce,
-                            gasPrice: ethers.parseUnits("0.02", "gwei")
+                            ...gasPriceOverride
                         })
                     );
                     await gasTx.wait();
-                    console.log(`   ⛽ Refilled gas for ${agent.personality.name}`);
+                    const newBalance = await prov.getBalance(agent.wallet.address);
+                    console.log(`   ✅ Refilled gas for ${agent.personality.name}: ${ethers.formatEther(gasFunding.amount)} ${config.blockchain.currencySymbol} (new balance: ${ethers.formatEther(newBalance)})`);
+                    refillCount++;
+                    // Small delay to avoid nonce issues
+                    await new Promise(resolve => setTimeout(resolve, 300));
+                } else {
+                    console.log(`   ✅ ${agent.personality.name} has sufficient gas`);
                 }
-                // Small delay to avoid nonce issues
-                await new Promise(resolve => setTimeout(resolve, 300));
             } catch (error: any) {
-                console.error(`   ❌ Failed to refill gas for ${agent.personality.name}:`, error?.message);
+                console.error(`   ❌ Failed to check/refill gas for ${agent.personality.name}:`, error?.message);
             }
+        }
+        
+        if (refillCount === 0) {
+            console.log(`   ✅ All agents have sufficient gas`);
         }
         
         return { success: true, txHash: tx.hash };
@@ -372,8 +542,9 @@ export async function registerAllAgents(agents: Agent[]): Promise<string[]> {
         const tapsNeeded = Math.ceil(Number(ethers.formatUnits(neededWei - backendBalance, 18)) / 100);
         for (let i = 0; i < tapsNeeded; i++) {
             try {
+                const gasPriceOverride = getGasPriceOverride();
                 const tx = await sendWithFreshNonce(signer, (nonce) => 
-                    router.userFaucet({ nonce, gasPrice: ethers.parseUnits("0.02", "gwei") })
+                    router.userFaucet({ nonce, ...gasPriceOverride })
                 );
                 txHashes.push(tx.hash);
             } catch (error: any) {
@@ -394,8 +565,9 @@ export async function registerAllAgents(agents: Agent[]): Promise<string[]> {
             if (balance === 0) {
                 console.log(`   Registering agent to mint initial capital...`);
                 try {
+                    const gasPriceOverride = getGasPriceOverride();
                     const tx = await sendWithFreshNonce(signer, (nonce) =>
-                        router.registerAgent(agent.wallet.address, { nonce, gasPrice: ethers.parseUnits("0.02", "gwei") })
+                        router.registerAgent(agent.wallet.address, { nonce, ...gasPriceOverride })
                     );
                     txHashes.push(tx.hash);
 
@@ -404,14 +576,15 @@ export async function registerAllAgents(agents: Agent[]): Promise<string[]> {
                     const excess = newBalanceWei - targetWei;
 
                     // Ensure agent has gas before transferring back
+                    const gasFunding = getAgentGasFunding();
                     const eth = await prov.getBalance(agent.wallet.address);
-                    if (eth < ethers.parseEther("0.05")) {
+                    if (eth < gasFunding.threshold) {
                         const gasTx = await sendWithFreshNonce(signer, (nonce) =>
                             signer.sendTransaction({ 
                                 to: agent.wallet.address, 
-                                value: ethers.parseEther("0.1"), 
+                                value: gasFunding.amount, 
                                 nonce,
-                                gasPrice: ethers.parseUnits("0.02", "gwei")
+                                ...getGasPriceOverride()
                             })
                         );
                         txHashes.push(gasTx.hash);
@@ -423,7 +596,7 @@ export async function registerAllAgents(agents: Agent[]): Promise<string[]> {
 
                     const returnTx = await agentVUSDC.transfer(signer.address, excess, { 
                         nonce: agentNonce,
-                        gasPrice: ethers.parseUnits("0.02", "gwei")
+                        ...getGasPriceOverride()
                     });
                     await returnTx.wait();
                     txHashes.push(returnTx.hash);
@@ -437,15 +610,16 @@ export async function registerAllAgents(agents: Agent[]): Promise<string[]> {
                 const agentVUSDC = vusdc.connect(agentSigner) as unknown as ERC20;
 
                 // Ensure agent has gas
+                const gasFunding = getAgentGasFunding();
                 const eth = await prov.getBalance(agent.wallet.address);
-                if (eth < ethers.parseEther("0.05")) {
+                if (eth < gasFunding.threshold) {
                     try {
                         const tx = await sendWithFreshNonce(signer, (nonce) =>
                             signer.sendTransaction({ 
                                 to: agent.wallet.address, 
-                                value: ethers.parseEther("0.1"), 
+                                value: gasFunding.amount, 
                                 nonce,
-                                gasPrice: ethers.parseUnits("0.02", "gwei")
+                                ...getGasPriceOverride()
                             })
                         );
                         txHashes.push(tx.hash);
@@ -458,7 +632,7 @@ export async function registerAllAgents(agents: Agent[]): Promise<string[]> {
                     const agentNonce = await prov.getTransactionCount(agent.wallet.address, 'pending');
                     const tx = await agentVUSDC.transfer(signer.address, excess, { 
                         nonce: agentNonce,
-                        gasPrice: ethers.parseUnits("0.02", "gwei")
+                        ...getGasPriceOverride()
                     });
                     await tx.wait();
                     txHashes.push(tx.hash);
@@ -472,7 +646,7 @@ export async function registerAllAgents(agents: Agent[]): Promise<string[]> {
                     const tx = await sendWithFreshNonce(signer, (nonce) =>
                         vusdc.transfer(agent.wallet.address, deficiency, { 
                             nonce,
-                            gasPrice: ethers.parseUnits("0.02", "gwei")
+                            ...getGasPriceOverride()
                         })
                     );
                     txHashes.push(tx.hash);
@@ -483,15 +657,16 @@ export async function registerAllAgents(agents: Agent[]): Promise<string[]> {
             }
 
             // Gas buffer
+            const gasFunding = getAgentGasFunding();
             const eth = await prov.getBalance(agent.wallet.address);
-            if (eth < ethers.parseEther("0.1")) {
+            if (eth < gasFunding.threshold) {
                 try {
                     const tx = await sendWithFreshNonce(signer, (nonce) =>
                         signer.sendTransaction({ 
                             to: agent.wallet.address, 
-                            value: ethers.parseEther("0.5"), 
+                            value: gasFunding.amount, 
                             nonce,
-                            gasPrice: ethers.parseUnits("0.02", "gwei")
+                            ...getGasPriceOverride()
                         })
                     );
                     txHashes.push(tx.hash);
@@ -510,7 +685,7 @@ export async function registerAllAgents(agents: Agent[]): Promise<string[]> {
                     const agentNonce = await prov.getTransactionCount(agent.wallet.address, 'pending');
                     const tx = await agentVUSDC.approve(ROUTER_ADDRESS, ethers.MaxUint256, { 
                         nonce: agentNonce,
-                        gasPrice: ethers.parseUnits("0.02", "gwei")
+                        ...getGasPriceOverride()
                     });
                     await tx.wait();
                     txHashes.push(tx.hash);
@@ -545,12 +720,12 @@ export async function createProposalOnChain(
         const router = getRouter();
         const signer = getBackendSigner();
         const liquidityWei = ethers.parseUnits(liquidity.toString(), 18);
-        const gasPrice = ethers.parseUnits("0.02", "gwei");
+        const gasPriceOverride = getGasPriceOverride();
 
         const nonce = await signer.getNonce('pending');
         const tx = await router.createProposal(
             proposalId, name, description, evalLogic, mathLogic, deadline, liquidityWei,
-            { nonce, gasPrice }
+            { nonce, ...gasPriceOverride }
         );
         const receipt = await tx.wait();
 
@@ -580,11 +755,16 @@ export async function executeSwapOnChain(
     minAmountOut: number
 ): Promise<{ success: boolean; txHash?: string }> {
     try {
+        // Validate inputs
+        if (!proposalId || !tokenIn || amountIn <= 0 || minAmountOut < 0) {
+            console.error(`❌ Invalid swap parameters for ${agent.personality.name}`);
+            return { success: false };
+        }
         const prov = getProvider();
         const router = getRouter();
         const agentSigner = getAgentSigner(agent, prov);
 
-        const agentRouter = (new ethers.Contract(ROUTER_ADDRESS, routerABI, agentSigner)) as unknown as VerdictRouter;
+        const agentRouter = (new ethers.Contract(ROUTER_ADDRESS, routerArtifact.abi, agentSigner)) as unknown as VerdictRouter;
 
         let actualTokenIn = tokenIn;
         try {
@@ -611,55 +791,120 @@ export async function executeSwapOnChain(
 
         if (bal < amountWei) return { success: false };
 
-        // Check and refill gas if needed (agents need native MNT to pay for gas)
-        const GAS_THRESHOLD = ethers.parseEther("0.1"); // Minimum gas balance
-        const GAS_AMOUNT = ethers.parseEther("0.5"); // Amount to send
-        if (nativeBalance < GAS_THRESHOLD) {
+        // Check and refill gas if needed (agents need native tokens to pay for gas)
+        const gasFunding = getAgentGasFunding();
+        if (nativeBalance < gasFunding.threshold) {
             try {
                 const signer = getBackendSigner();
+                const gasPriceOverride = getGasPriceOverride();
                 const gasTx = await sendWithFreshNonce(signer, (nonce) =>
                     signer.sendTransaction({
                         to: agent.wallet.address,
-                        value: GAS_AMOUNT,
+                        value: gasFunding.amount,
                         nonce,
-                        gasPrice: ethers.parseUnits("0.02", "gwei")
+                        ...gasPriceOverride
                     })
                 );
                 await gasTx.wait();
-                console.log(`   ⛽ Refilled gas for ${agent.personality.name}: ${ethers.formatEther(GAS_AMOUNT)} MNT`);
+                console.log(`   ✅ Gas refilled for ${agent.personality.name}: ${ethers.formatEther(gasFunding.amount)} ${config.blockchain.currencySymbol}`);
+                
+                // Verify balance after refill
+                const newBalance = await prov.getBalance(agent.wallet.address);
+                console.log(`   📊 ${agent.personality.name} gas balance now: ${ethers.formatEther(newBalance)} ${config.blockchain.currencySymbol}`);
             } catch (error: any) {
                 console.error(`   ❌ Failed to refill gas for ${agent.personality.name}:`, error?.message);
-                // Continue anyway - maybe they have enough
+                return { success: false }; // MUST return failure - can't trade without gas
             }
+        } else {
+            console.log(`   ✅ ${agent.personality.name} has sufficient gas: ${ethers.formatEther(nativeBalance)} ${config.blockchain.currencySymbol}`);
         }
 
-        const gasPrice = ethers.parseUnits("0.02", "gwei");
+        const gasPriceOverride = getGasPriceOverride();
 
         // Handle approval with fresh nonce
         if (allowance < amountWei) {
             try {
+                console.log(`   🔐 Approving Router for ${agent.personality.name}...`);
                 await sendWithFreshNonceForAgent(agentSigner, async (nonce) => {
-                    return await token.approve(ROUTER_ADDRESS, ethers.MaxUint256, { nonce, gasPrice });
+                    return await token.approve(ROUTER_ADDRESS, ethers.MaxUint256, { nonce, ...gasPriceOverride });
                 });
+                console.log(`   ✅ Approval confirmed for ${agent.personality.name}`);
             } catch (error: any) {
                 console.error(`❌ Approval failed for ${agent.personality.name}:`, error?.message);
                 return { success: false };
             }
+        } else {
+            console.log(`   ✅ ${agent.personality.name} already has sufficient allowance`);
         }
 
         // Handle swap with fresh nonce
         try {
-            const tx = await sendWithFreshNonceForAgent(agentSigner, async (nonce) => {
-                return await agentRouter.swap(proposalId, actualTokenIn, amountWei, minOutWei, { nonce, gasPrice });
+            console.log(`   🔄 Executing swap for ${agent.personality.name}...`);
+            console.log(`   📋 Swap params: proposalId=${proposalId}, tokenIn=${actualTokenIn}, amountIn=${ethers.formatEther(amountWei)}, minOut=${ethers.formatEther(minOutWei)}`);
+            
+            // Validate proposal exists before swapping (prevent contract revert)
+            // Skip validation if it fails - let the swap itself handle the error
+            try {
+                const yesTokenAddress = await Promise.race([
+                    router.getYesTokenAddress(proposalId),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('Validation timeout')), 5000))
+                ]).catch(() => null);
+                
+                if (yesTokenAddress && yesTokenAddress !== ethers.ZeroAddress) {
+                    console.log(`   ✅ Proposal ${proposalId} validated`);
+                } else {
+                    console.log(`   ⚠️  Could not validate proposal ${proposalId}, proceeding anyway`);
+                }
+            } catch (proposalError: any) {
+                // Don't fail on validation error - let swap handle it
+                console.log(`   ⚠️  Proposal validation skipped: ${proposalError?.message || 'Unknown error'}`);
+            }
+            
+            const swapTx = await sendWithFreshNonceForAgent(agentSigner, async (nonce) => {
+                try {
+                    return await agentRouter.swap(proposalId, actualTokenIn, amountWei, minOutWei, { nonce, ...gasPriceOverride });
+                } catch (swapError: any) {
+                    const swapErrorMsg = swapError?.message || swapError?.reason || swapError?.code || 'Unknown error';
+                    
+                    // Handle rate limit errors - try switching to fallback
+                    if (swapError?.code === 429 || swapErrorMsg?.includes('compute units') || swapErrorMsg?.includes('rate limit') || swapErrorMsg?.includes('exceeded')) {
+                        console.error(`   ⚠️  Rate limit detected:`, swapErrorMsg);
+                        const switched = await handleRateLimitError(swapError);
+                        if (switched && provider) {
+                            // Retry with new provider
+                            console.log(`   🔄 Retrying swap with fallback provider...`);
+                            const newAgentSigner = getAgentSigner(agent, provider);
+                            const newAgentRouter = new ethers.Contract(ROUTER_ADDRESS, routerArtifact.abi, newAgentSigner) as unknown as VerdictRouter;
+                            return await newAgentRouter.swap(proposalId, actualTokenIn, amountWei, minOutWei, { nonce, ...gasPriceOverride });
+                        }
+                        throw new Error('Rate limit - retry later');
+                    }
+                    
+                    console.error(`   ❌ Contract swap call failed:`, swapErrorMsg);
+                    if (swapError?.data) {
+                        console.error(`   Error data:`, swapError.data);
+                    }
+                    throw swapError;
+                }
             });
-            await tx.wait();
-            return { success: true, txHash: tx.hash };
+            console.log(`   ✅ Swap confirmed for ${agent.personality.name}: ${swapTx.hash}`);
+            
+            return { success: true, txHash: swapTx.hash };
         } catch (error: any) {
-            console.error(`❌ Swap failed for ${agent.personality.name}:`, error?.message);
+            const errorMsg = error?.message || error?.reason || error?.code || 'Unknown error';
+            console.error(`❌ Swap failed for ${agent.personality.name}:`, errorMsg);
+            if (error?.data) {
+                console.error(`   Error data:`, error.data);
+            }
+            // Return failure instead of throwing to prevent server crash
             return { success: false };
         }
     } catch (error: any) {
-        console.error(`❌ Swap failed for ${agent.personality.name}:`, error?.message);
+        const errorMsg = error?.message || error?.reason || error?.code || 'Unknown error';
+        console.error(`❌ Swap execution error for ${agent.personality.name}:`, errorMsg);
+        if (error?.stack) {
+            console.error(`   Stack:`, error.stack.substring(0, 200));
+        }
         return { success: false };
     }
 }
@@ -692,7 +937,15 @@ export async function getAgentVUSDCBalance(agentAddress: string): Promise<number
 }
 
 export async function getYesTokenAddress(proposalId: string): Promise<string> {
-    try { return await getRouter().getYesTokenAddress(proposalId); } catch { return ''; }
+    try { 
+        return await Promise.race([
+            getRouter().getYesTokenAddress(proposalId),
+            new Promise<string>((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000))
+        ]);
+    } catch (error: any) {
+        // Silently fail - don't crash on validation errors
+        return ''; 
+    }
 }
 
 export async function getAgentYESBalance(proposalId: string, agentAddress: string): Promise<number> {
@@ -719,13 +972,38 @@ export async function getPoolReserves(proposalId: string): Promise<{ vUSDC: numb
     } catch { return { vUSDC: 0, yes: 0 }; }
 }
 
+/**
+ * Calculate how many YES tokens you get for a given amount of vUSD using the contract's swap formula
+ * This matches the actual on-chain swap calculation
+ */
+export async function calculateYESForVUSDOnChain(
+    proposalId: string,
+    vUSDAmount: number
+): Promise<number> {
+    try {
+        const router = getRouter();
+        const vUSDCAddress = VUSDCADDRESS;
+        
+        // Get the pool reserves to calculate swap
+        const reserves = await getPoolReserves(proposalId);
+        if (reserves.vUSDC === 0 || reserves.yes === 0) return 0;
+        
+        // Use the same calculation as the contract
+        const { calculateYESForVUSDSwap } = await import('../engine/amm');
+        return calculateYESForVUSDSwap(vUSDAmount, reserves.vUSDC, reserves.yes);
+    } catch (error) {
+        console.error('Failed to calculate YES for vUSD:', error);
+        return 0;
+    }
+}
+
 export async function initializeMarketOnChain(duration: number): Promise<string | null> {
     try {
         const router = getRouter();
         const signer = getBackendSigner();
-        const gasPrice = ethers.parseUnits("0.02", "gwei");
+        const gasPriceOverride = getGasPriceOverride();
         const nonce = await signer.getNonce('pending');
-        const tx = await router.initializeMarket(duration, { nonce, gasPrice });
+        const tx = await router.initializeMarket(duration, { nonce, ...gasPriceOverride });
         await tx.wait();
         return tx.hash;
     } catch { return null; }
@@ -739,7 +1017,7 @@ export async function initializeMarketWithProposalsBatch(
     const signer = getBackendSigner();
     const txHashes: string[] = [];
 
-    const gasPrice = ethers.parseUnits("0.02", "gwei");
+    const gasPriceOverride = getGasPriceOverride();
 
     // Try batch first (assuming contract has this method)
     try {
@@ -755,7 +1033,7 @@ export async function initializeMarketWithProposalsBatch(
         }));
 
         const nonce = await signer.getNonce('pending');
-        const tx = await router.initializeMarketWithProposals(duration, proposalsToCreate, { nonce, gasPrice });
+        const tx = await router.initializeMarketWithProposals(duration, proposalsToCreate, { nonce, ...gasPriceOverride });
         await tx.wait();
         txHashes.push(tx.hash);
         console.log(`Batch successful`);
@@ -767,7 +1045,7 @@ export async function initializeMarketWithProposalsBatch(
     // Fallback: Sequential
     try {
         let nonce = await signer.getNonce('pending');
-        const initTx = await router.initializeMarket(duration, { nonce: nonce++, gasPrice });
+        const initTx = await router.initializeMarket(duration, { nonce: nonce++, ...gasPriceOverride });
         await initTx.wait();
         txHashes.push(initTx.hash);
 
@@ -775,7 +1053,7 @@ export async function initializeMarketWithProposalsBatch(
             console.log(`Creating: ${p.name}...`);
             nonce = await signer.getNonce('pending'); // Get fresh nonce for each proposal
             const tx = await router.createProposal(
-                p.id, p.name, p.description, p.evaluationLogic, p.mathematicalLogic, p.resolutionDeadline, ethers.parseUnits("2000", 18), { nonce: nonce++, gasPrice }
+                p.id, p.name, p.description, p.evaluationLogic, p.mathematicalLogic, p.resolutionDeadline, ethers.parseUnits("2000", 18), { nonce: nonce++, ...gasPriceOverride }
             );
             await tx.wait();
             txHashes.push(tx.hash);
@@ -819,9 +1097,9 @@ export async function graduateProposalOnChain(proposalId: string, finalPrice: nu
         const router = getRouter();
         const signer = getBackendSigner();
         const priceWei = ethers.parseUnits(finalPrice.toString(), 18);
-        const gasPrice = ethers.parseUnits("0.02", "gwei");
+        const gasPriceOverride = getGasPriceOverride();
         const nonce = await signer.getNonce('pending');
-        const tx = await router.graduateProposal(proposalId, priceWei, { nonce, gasPrice });
+        const tx = await router.graduateProposal(proposalId, priceWei, { nonce, ...gasPriceOverride });
         await tx.wait();
         return tx.hash;
     } catch { return null; }

@@ -49,8 +49,10 @@ export interface MarketState {
   lastRoundEndTime: number | null; // When the last round ended (for enforcing gap between rounds)
   tradeQueue: Array<{ decision: TradeDecision; agent: Agent }>; // Queue of trades to execute
   lastBatchLLMCallTime: number | null; // When the last batch LLM call was made
-  isExecutingTrades: boolean; // Whether trades are currently being executed
+  isExecutingTrades: boolean; // Whether the trading round is active (true for entire round until time expires)
+  isExecutingTradeBatch: boolean; // Whether a batch of trades is currently being executed (separate from round status)
   isMakingBatchLLMCall: boolean; // Whether a batch LLM call is currently in progress
+  // Note: isActive is computed in API responses based on roundEndTime (time-based only, not affected by API failures)
 }
 
 // Agent personality and memo
