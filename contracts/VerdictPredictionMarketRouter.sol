@@ -10,17 +10,19 @@ import "./utils/@openzeppelin/contracts/access/Ownable.sol";
 /**
  * @title VerdictPredictionMarketRouter
  * @notice Central entry point for all Verdict Market operations.
- * @dev Deploys ALL contracts internally. NO external dependencies!
+ * @dev Accepts pre-deployed contract addresses to reduce bytecode size.
  * 
- * DEPLOYMENT: Only deploy this ONE contract. It creates everything else:
- * - VerdictVirtualUSDCToken (vUSDC)
- * - VerdictProposalRegistryStorage (Registry)
- * - VerdictYESTokenDeployerFactory (Token Factory)
- * - VerdictSimpleAMM (Built-in trading)
+ * DEPLOYMENT ORDER (deploy each separately, then Router):
+ * 1. Deploy VerdictVirtualUSDCToken
+ * 2. Deploy VerdictProposalRegistryStorage
+ * 3. Deploy VerdictYESTokenDeployerFactory
+ * 4. Deploy VerdictSimpleAMM
+ * 5. Deploy VerdictPredictionMarketRouter (passing all addresses above)
+ * 6. Call setupPermissions() on Router to configure all contracts
  */
 contract VerdictPredictionMarketRouter is Ownable {
     
-    // ============ Deployed Contracts ============
+    // ============ External Contracts ============
     VerdictVirtualUSDCToken public vUSDCToken;
     VerdictProposalRegistryStorage public registry;
     VerdictYESTokenDeployerFactory public factory;
@@ -29,12 +31,14 @@ contract VerdictPredictionMarketRouter is Ownable {
     address public backendSigner;
     uint256 public currentRound;
     bool public isMarketActive;
+    bool public permissionsConfigured;
 
     // Tracking
     mapping(string => address) public proposalToYesToken;
     mapping(string => bytes32) public proposalToPoolId;
 
-    event ContractsDeployed(address vUSDC, address registry, address factory, address amm);
+    event ContractsLinked(address vUSDC, address registry, address factory, address amm);
+    event PermissionsConfigured();
     event MarketStarted(uint256 round, uint256 endTime);
     event ProposalLaunched(string id, address yesToken, bytes32 poolId);
     event AgentRegistered(address agent, uint256 balance);
@@ -42,6 +46,8 @@ contract VerdictPredictionMarketRouter is Ownable {
 
     error OnlyBackend();
     error MarketInactive();
+    error PermissionsAlreadyConfigured();
+    error InvalidAddress();
 
     modifier onlyBackend() {
         if (msg.sender != backendSigner && msg.sender != owner()) revert OnlyBackend();
@@ -49,37 +55,50 @@ contract VerdictPredictionMarketRouter is Ownable {
     }
 
     /**
-     * @notice Deploy this ONE contract - it creates ALL others internally!
+     * @notice Deploy Router with pre-deployed contract addresses
      * @param _backendSigner Your backend wallet address
+     * @param _vUSDC Address of deployed VerdictVirtualUSDCToken
+     * @param _registry Address of deployed VerdictProposalRegistryStorage
+     * @param _factory Address of deployed VerdictYESTokenDeployerFactory
+     * @param _amm Address of deployed VerdictSimpleAMM
      */
-    constructor(address _backendSigner) Ownable(msg.sender) {
-        require(_backendSigner != address(0), "Invalid backend signer");
+    constructor(
+        address _backendSigner,
+        address _vUSDC,
+        address _registry,
+        address _factory,
+        address _amm
+    ) Ownable(msg.sender) {
+        if (_backendSigner == address(0)) revert InvalidAddress();
+        if (_vUSDC == address(0)) revert InvalidAddress();
+        if (_registry == address(0)) revert InvalidAddress();
+        if (_factory == address(0)) revert InvalidAddress();
+        if (_amm == address(0)) revert InvalidAddress();
+
         backendSigner = _backendSigner;
+        vUSDCToken = VerdictVirtualUSDCToken(_vUSDC);
+        registry = VerdictProposalRegistryStorage(_registry);
+        factory = VerdictYESTokenDeployerFactory(_factory);
+        amm = VerdictSimpleAMM(_amm);
 
-        // 1. Deploy vUSDC Token
-        vUSDCToken = new VerdictVirtualUSDCToken();
-        
-        // 2. Deploy Registry
-        registry = new VerdictProposalRegistryStorage();
-        
-        // 3. Deploy Token Factory
-        factory = new VerdictYESTokenDeployerFactory();
-        
-        // 4. Deploy AMM
-        amm = new VerdictSimpleAMM();
+        emit ContractsLinked(_vUSDC, _registry, _factory, _amm);
+    }
 
-        // Setup permissions
+    /**
+     * @notice Setup permissions on all contracts (call after deployment)
+     * @dev Must be called by owner. Each contract must have transferred ownership to Router first.
+     */
+    function setupPermissions() external onlyOwner {
+        if (permissionsConfigured) revert PermissionsAlreadyConfigured();
+        
+        // Setup permissions - these require the contracts to have set this Router as authorized
         vUSDCToken.authorizeMinter(address(this));
         registry.setMarketContract(address(this));
         factory.setMarketContract(address(this));
         amm.setRouter(address(this));
 
-        emit ContractsDeployed(
-            address(vUSDCToken), 
-            address(registry), 
-            address(factory), 
-            address(amm)
-        );
+        permissionsConfigured = true;
+        emit PermissionsConfigured();
     }
 
     // ================================================================

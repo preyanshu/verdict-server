@@ -221,12 +221,7 @@ export async function generateAndSetStrategies(marketState: MarketState): Promis
     ];
   }
 
-  marketState.strategies = strategies;
-  marketState.timestamp = Date.now();
-  marketState.roundStartTime = 0;
-  marketState.roundEndTime = 0;
-
-  // Register proposals on-chain in ONE BATCH
+  // Register proposals on-chain FIRST (before adding to memory)
   log('Market', `Registering ${strategies.length} proposals on blockchain via atomic batch transaction`);
   try {
     const blockchain = await import('../blockchain') as any;
@@ -236,28 +231,45 @@ export async function generateAndSetStrategies(marketState: MarketState): Promis
 
     if (!result.success) {
       log('Market', 'Atomic batch initialization failed on-chain', 'error');
-      marketState.strategies = [];
-      return;
+      throw new Error('Failed to create proposals on-chain');
     }
 
     log('Market', `Successfully registered ${strategies.length} proposals on blockchain`);
     result.txHashes.forEach((hash: string) => {
       log('Market', `Transaction confirmed: ${config.blockchain.blockExplorerUrl}/tx/${hash}`, 'debug');
     });
+
+    // Only add to memory AFTER blockchain operation succeeds
+    marketState.strategies = strategies;
+    marketState.timestamp = Date.now();
+    marketState.roundStartTime = 0;
+    marketState.roundEndTime = 0;
   } catch (error) {
     log('Market', `On-chain registration failed: ${error instanceof Error ? error.message : error}`, 'error');
     marketState.strategies = [];
+    throw error; // Re-throw to let caller know it failed
   }
 }
 
 /**
  * Reconstruct active market state from on-chain data
+ * NOTE: This syncs proposals but NOT round timing (server-side only)
  */
 export async function syncActiveMarketFromChain(marketState: MarketState): Promise<void> {
-  const { getRoundInfoOnChain, getProposalStatus } = await import('../blockchain');
-  const info = await getRoundInfoOnChain();
+  const { getProposalStatus, getRouter } = await import('../blockchain');
+  const router = getRouter();
+  
+  // Get round info but only use it for proposal IDs, not timing
+  // NOTE: We do NOT sync roundStartTime, roundEndTime, or roundDuration (server-side only)
+  let info;
+  try {
+    info = await router.getRoundInfo();
+  } catch (e) {
+    log('Market', `Failed to fetch round info: ${e}`, 'warn');
+    return;
+  }
 
-  if (info && info.active && info.proposalIds.length > 0) {
+  if (info && info.active && info.proposalIds && info.proposalIds.length > 0) {
     log('Market', `Syncing ${info.proposalIds.length} active proposals from chain...`);
 
     const strategies: MarketStrategy[] = [];
@@ -297,15 +309,8 @@ export async function syncActiveMarketFromChain(marketState: MarketState): Promi
       }
     }
 
-    marketState.strategies = strategies;
-    marketState.roundNumber = info.roundNumber;
-    marketState.roundStartTime = info.roundStartTime;
-    marketState.roundEndTime = info.roundEndTime;
-    marketState.roundDuration = info.roundDuration;
-
-    // Immediately sync reserves and prices for the fetched strategies
-    await syncReservesFromChain(marketState);
-    log('Market', 'Active market state reconstructed from blockchain');
+    // This function is no longer used - we generate strategies fresh via /api/admin/init
+    log('Market', 'Note: syncActiveMarketFromChain is deprecated - use /api/admin/init instead', 'warn');
   }
 }
 
@@ -323,19 +328,6 @@ export function resetStrategiesForNewRound(marketState: MarketState): void {
 /**
  * Sync in-memory market state with on-chain round data
  */
-export async function syncRoundInfoFromChain(marketState: MarketState): Promise<void> {
-  const { getRoundInfoOnChain } = await import('../blockchain');
-  const info = await getRoundInfoOnChain();
-
-  if (info) {
-    marketState.roundNumber = info.roundNumber;
-    marketState.roundStartTime = info.roundStartTime;
-    marketState.roundEndTime = info.roundEndTime;
-    marketState.roundDuration = info.roundDuration;
-    // We don't sync proposalIds here yet as they are managed by generateAndSetStrategies
-  }
-}
-
 /**
  * Sync in-memory market state with on-chain data
  */
@@ -392,11 +384,9 @@ export async function syncReservesFromChain(marketState: MarketState): Promise<v
  * Update market state (no random price changes - AMM handles pricing)
  */
 export async function updateMarketPrice(marketState: MarketState): Promise<void> {
-  // Sync reserves and round info from blockchain (Single Source of Truth for timing and liquidity)
-  await Promise.all([
-    syncReservesFromChain(marketState),
-    syncRoundInfoFromChain(marketState)
-  ]);
+  // Sync reserves from blockchain (Single Source of Truth for liquidity)
+  // NOTE: Round timing is managed server-side, not synced from blockchain
+  await syncReservesFromChain(marketState);
 
   // Update TWAPs for all strategies
   for (const strategy of marketState.strategies) {

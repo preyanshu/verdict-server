@@ -86,16 +86,17 @@ export function updateAgentTokenHoldings(
 
 /**
  * Helper function to select a strategy for an agent to trade on
+ * Randomly selects from unresolved strategies to ensure all proposals get trading activity
  */
 export function selectStrategyForAgent(agent: Agent, market: MarketState): MarketStrategy | null {
-  // Simple selection: agents can trade on any strategy
-  // For now, randomly select or use agent's preference
-  if (market.strategies.length === 0) return null;
+  // Filter to only unresolved strategies
+  const availableStrategies = market.strategies.filter(s => !s.resolved);
+  
+  if (availableStrategies.length === 0) return null;
 
-  // Agents with yes-no strategy prefer certain strategies based on their personality
-  const strategyIndex = agent.id.charCodeAt(agent.id.length - 1) % market.strategies.length;
-  const strategy = market.strategies[strategyIndex];
-  return strategy ?? null;
+  // Randomly select a strategy (ensures all proposals get trading activity)
+  const randomIndex = Math.floor(Math.random() * availableStrategies.length);
+  return availableStrategies[randomIndex];
 }
 
 /**
@@ -168,13 +169,12 @@ export async function generateAndSetAgents(agents: Agent[]): Promise<void> {
     ];
   }
 
-  personalities.forEach((personality, index) => {
+  // Prepare agent objects (but don't add to array yet)
+  const agentObjects = personalities.map((personality, index) => {
     // Derive wallet for this agent from master seed
     const wallet = deriveWallet(index);
 
-    log('Agents', `Configuration complete: ${personality.name} (${wallet.address})`);
-
-    agents.push({
+    return {
       id: `agent-${index + 1}`,
       personality,
       strategy: 'yes-no' as const,
@@ -183,30 +183,43 @@ export async function generateAndSetAgents(agents: Agent[]): Promise<void> {
       wallet,
       trades: [],
       roundMemory: [],
-    });
+    };
   });
 
-  log('Agents', `${agents.length} agent identities derived from master seed`);
+  log('Agents', `${agentObjects.length} agent identities prepared`);
 
-  // Register agents on-chain (ALL OR NOTHING with nonce management)
-  log('Agents', 'Synchronizing agent identities with blockchain...');
+  // Register agents on-chain FIRST using batch function (atomic - all or nothing)
+  log('Agents', 'Synchronizing agent identities with blockchain via batch registration...');
   try {
     const blockchain = await import('../blockchain') as any;
     const { config } = await import('../core/config');
 
-    const txHashes = await blockchain.registerAllAgents(agents);
+    // Extract agent addresses for batch registration
+    const agentAddresses = agentObjects.map(agent => agent.wallet.address);
 
-    // If we get here but agents is empty, registration failed
-    if (agents.length === 0) {
-      throw new Error('On-chain identity synchronization failed');
+    // Register all agents in one atomic batch transaction
+    const result = await blockchain.registerAllAgentsBatch(agentAddresses);
+
+    if (!result.success) {
+      throw new Error('Batch agent registration failed on-chain');
     }
 
-    log('Agents', `Successfully synchronized ${agents.length} agent identities with blockchain`);
-    txHashes.forEach((hash: string) => {
-      log('Agents', `Synchronization confirmed: ${config.blockchain.blockExplorerUrl}/tx/${hash}`, 'debug');
+    log('Agents', `Successfully synchronized ${agentObjects.length} agent identities with blockchain`);
+    if (result.txHash) {
+      log('Agents', `Batch registration confirmed: ${config.blockchain.blockExplorerUrl}/tx/${result.txHash}`, 'debug');
+    }
+
+    // Only add to memory AFTER blockchain operation succeeds
+    agents.length = 0;
+    agentObjects.forEach((agent) => {
+      log('Agents', `Configuration complete: ${agent.personality.name} (${agent.wallet.address})`);
+      agents.push(agent);
     });
+
+    log('Agents', `${agents.length} agent identities added to memory`);
   } catch (error) {
     log('Agents', `On-chain identity synchronization failed: ${error instanceof Error ? error.message : error}`, 'error');
     agents.length = 0;
+    throw error; // Re-throw to let caller know it failed
   }
 }

@@ -10,6 +10,9 @@ import routerABI from '../../contracts/abi.json';
 interface VerdictRouter extends BaseContract {
     getDeployedContracts(): Promise<{ _vUSDC: string; _registry: string; _factory: string; _amm: string }>;
     registerAgent(agentAddress: string, overrides?: any): Promise<ContractTransactionResponse>;
+    registerAgentsBatch(agents: string[], overrides?: any): Promise<ContractTransactionResponse>;
+    resetAgentBalanceTo100(agent: string, overrides?: any): Promise<ContractTransactionResponse>;
+    resetAgentsBalanceTo100Batch(agents: string[], overrides?: any): Promise<ContractTransactionResponse>;
     userFaucet(overrides?: any): Promise<ContractTransactionResponse>;
     createProposal(
         id: string,
@@ -22,7 +25,7 @@ interface VerdictRouter extends BaseContract {
         overrides?: any
     ): Promise<ContractTransactionResponse>;
     initializeMarket(duration: number, overrides?: any): Promise<ContractTransactionResponse>;
-    initializeMarketWithProposals(duration: number, proposals: any[]): Promise<ContractTransactionResponse>;
+    initializeMarketWithProposals(duration: number, proposals: any[], overrides?: any): Promise<ContractTransactionResponse>;
     vUSDCToken(): Promise<string>;
     swap(id: string, tokenIn: string, amountIn: bigint, minOut: bigint, overrides?: any): Promise<ContractTransactionResponse>;
     getVUSDCBalance(account: string): Promise<bigint>;
@@ -31,7 +34,7 @@ interface VerdictRouter extends BaseContract {
     getYESPrice(id: string): Promise<bigint>;
     getPoolReserves(id: string): Promise<{ vUSDCReserve: bigint; yesReserve: bigint }>;
     currentRound(): Promise<bigint>;
-    graduateProposal(id: string, finalPrice: bigint): Promise<ContractTransactionResponse>;
+    graduateProposal(id: string, finalPrice: bigint, overrides?: any): Promise<ContractTransactionResponse>;
     getGraduatedProposals(): Promise<string[]>;
     getProposalStatus(id: string): Promise<any>;
     getRoundInfo(): Promise<{
@@ -56,7 +59,7 @@ interface ERC20 extends BaseContract {
  * Blockchain integration for Verdict Prediction Market
  */
 
-export const ROUTER_ADDRESS = '0x5FbDB2315678afecb367f032d93F642f64180aa3';
+export const ROUTER_ADDRESS = config.blockchain.routerAddress;
 
 // State variables
 export let VUSDCADDRESS = '';
@@ -99,9 +102,8 @@ export async function initBlockchain(): Promise<boolean> {
     try {
         provider = new JsonRpcProvider(config.blockchain.rpcUrl);
 
-        // Using first Hardhat account for testing
-        const hardhatPrivateKey = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80';
-        backendSigner = new Wallet(hardhatPrivateKey, provider);
+        // Use backend private key from config (reads from .env)
+        backendSigner = new Wallet(config.blockchain.backendPrivateKey, provider);
 
         routerContract = new ethers.Contract(ROUTER_ADDRESS, routerABI, backendSigner) as unknown as VerdictRouter;
 
@@ -140,9 +142,12 @@ export async function initBlockchain(): Promise<boolean> {
 export async function registerAgentOnChain(agent: Agent): Promise<{ success: boolean; txHash?: string }> {
     try {
         const router = getRouter();
+        const signer = getBackendSigner();
         console.log(`Registering agent ${agent.personality.name} (${agent.wallet.address})...`);
 
-        const tx = await router.registerAgent(agent.wallet.address);
+        const gasPrice = ethers.parseUnits("0.02", "gwei");
+        const nonce = await signer.getNonce('pending');
+        const tx = await router.registerAgent(agent.wallet.address, { nonce, gasPrice });
         await tx.wait();
         console.log(`Agent registered`);
 
@@ -154,7 +159,197 @@ export async function registerAgentOnChain(agent: Agent): Promise<{ success: boo
 }
 
 /**
+ * Helper to get fresh nonce and send transaction with retry
+ */
+async function sendWithFreshNonce(
+    signer: Wallet,
+    fn: (nonce: number) => Promise<any>,
+    maxRetries = 3
+): Promise<any> {
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+            const nonce = await signer.getNonce('pending');
+            const tx = await fn(nonce);
+            await tx.wait();
+            // Small delay to ensure nonce updates
+            await new Promise(resolve => setTimeout(resolve, 500));
+            return tx;
+        } catch (error: any) {
+            if (attempt === maxRetries - 1) throw error;
+            // If nonce error, wait a bit and retry
+            if (error.code === 'NONCE_EXPIRED' || error.code === 'REPLACEMENT_UNDERPRICED' || error.message?.includes('nonce')) {
+                await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+                continue;
+            }
+            throw error;
+        }
+    }
+}
+
+/**
+ * Register all agents on-chain using batch function (atomic - all or nothing)
+ */
+export async function registerAllAgentsBatch(agentAddresses: string[]): Promise<{ success: boolean; txHash?: string }> {
+    try {
+        const router = getRouter();
+        const signer = getBackendSigner();
+        const prov = getProvider();
+
+        console.log(`\nRegistering ${agentAddresses.length} agents on-chain via batch transaction...`);
+        
+        // Use sendWithFreshNonce to handle nonce properly
+        const tx = await sendWithFreshNonce(signer, (nonce) =>
+            router.registerAgentsBatch(agentAddresses, {
+                nonce,
+                gasPrice: ethers.parseUnits("0.02", "gwei")
+            })
+        );
+        await tx.wait();
+
+        console.log(`✅ Successfully registered ${agentAddresses.length} agents in batch`);
+        
+        // Fund all agents with native MNT for gas (they need this to make transactions)
+        console.log(`\nFunding agents with native MNT for gas...`);
+        const GAS_THRESHOLD = ethers.parseEther("0.1"); // Minimum gas balance
+        const GAS_AMOUNT = ethers.parseEther("0.5"); // Amount to send
+        
+        for (const address of agentAddresses) {
+            try {
+                const balance = await prov.getBalance(address);
+                if (balance < GAS_THRESHOLD) {
+                    const gasTx = await sendWithFreshNonce(signer, (nonce) =>
+                        signer.sendTransaction({
+                            to: address,
+                            value: GAS_AMOUNT,
+                            nonce,
+                            gasPrice: ethers.parseUnits("0.02", "gwei")
+                        })
+                    );
+                    await gasTx.wait();
+                    console.log(`   ✅ Funded ${address.substring(0, 10)}... with ${ethers.formatEther(GAS_AMOUNT)} MNT`);
+                } else {
+                    console.log(`   ⏭️  ${address.substring(0, 10)}... already has sufficient gas (${ethers.formatEther(balance)} MNT)`);
+                }
+                // Small delay to avoid nonce issues
+                await new Promise(resolve => setTimeout(resolve, 500));
+            } catch (error: any) {
+                console.error(`   ❌ Failed to fund ${address.substring(0, 10)}...:`, error?.message);
+            }
+        }
+        
+        console.log(`✅ Gas funding complete for all agents`);
+        
+        return { success: true, txHash: tx.hash };
+    } catch (error: any) {
+        console.error(`❌ Batch agent registration failed:`, error?.message);
+        return { success: false };
+    }
+}
+
+// Lock to prevent concurrent balance resets
+let isResettingBalances = false;
+
+/**
+ * Helper to send transaction with fresh nonce for agent signers
+ */
+async function sendWithFreshNonceForAgent(
+    agentSigner: ethers.Signer,
+    fn: (nonce: number) => Promise<any>,
+    maxRetries = 3
+): Promise<any> {
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+            const prov = getProvider();
+            const address = await agentSigner.getAddress();
+            const nonce = await prov.getTransactionCount(address, 'pending');
+            const tx = await fn(nonce);
+            await tx.wait();
+            await new Promise(resolve => setTimeout(resolve, 500));
+            return tx;
+        } catch (error: any) {
+            if (attempt === maxRetries - 1) throw error;
+            if (error.code === 'NONCE_EXPIRED' || error.code === 'REPLACEMENT_UNDERPRICED' || error.message?.includes('nonce') || error.message?.includes('replacement')) {
+                await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+                continue;
+            }
+            throw error;
+        }
+    }
+}
+
+/**
+ * Reset all agent balances to 100 vUSDC at round start using smart contract function
+ */
+export async function resetAgentBalancesTo100(agents: Agent[]): Promise<{ success: boolean; txHash?: string }> {
+    // Prevent concurrent calls
+    if (isResettingBalances) {
+        console.log(`⚠️ Balance reset already in progress, skipping...`);
+        return { success: false };
+    }
+
+    isResettingBalances = true;
+
+    try {
+        const router = getRouter();
+        const signer = getBackendSigner();
+
+        console.log(`\nResetting ${agents.length} agent balances to 100 vUSDC for new round...`);
+
+        // Extract agent addresses
+        const agentAddresses = agents.map(agent => agent.wallet.address);
+
+        // Use batch contract function - atomic, single transaction, handles all agents
+        const tx = await sendWithFreshNonce(signer, (nonce) =>
+            router.resetAgentsBalanceTo100Batch(agentAddresses, {
+                nonce,
+                gasPrice: ethers.parseUnits("0.02", "gwei")
+            })
+        );
+        await tx.wait();
+
+        console.log(`✅ Balance reset complete for ${agents.length} agents in single transaction`);
+        console.log(`   Transaction: ${tx.hash}`);
+        
+        // Refill gas for agents who need it (they may have used gas during trading)
+        console.log(`\nChecking and refilling gas for agents...`);
+        const prov = getProvider();
+        const GAS_THRESHOLD = ethers.parseEther("0.1");
+        const GAS_AMOUNT = ethers.parseEther("0.5");
+        
+        for (const agent of agents) {
+            try {
+                const balance = await prov.getBalance(agent.wallet.address);
+                if (balance < GAS_THRESHOLD) {
+                    const gasTx = await sendWithFreshNonce(signer, (nonce) =>
+                        signer.sendTransaction({
+                            to: agent.wallet.address,
+                            value: GAS_AMOUNT,
+                            nonce,
+                            gasPrice: ethers.parseUnits("0.02", "gwei")
+                        })
+                    );
+                    await gasTx.wait();
+                    console.log(`   ⛽ Refilled gas for ${agent.personality.name}`);
+                }
+                // Small delay to avoid nonce issues
+                await new Promise(resolve => setTimeout(resolve, 300));
+            } catch (error: any) {
+                console.error(`   ❌ Failed to refill gas for ${agent.personality.name}:`, error?.message);
+            }
+        }
+        
+        return { success: true, txHash: tx.hash };
+    } catch (error: any) {
+        console.error(`❌ Batch balance reset failed:`, error?.message);
+        return { success: false };
+    } finally {
+        isResettingBalances = false;
+    }
+}
+
+/**
  * Register all agents on-chain with proper nonce management
+ * @deprecated Use registerAllAgentsBatch for atomic batch registration
  */
 export async function registerAllAgents(agents: Agent[]): Promise<string[]> {
     const router = getRouter();
@@ -165,7 +360,6 @@ export async function registerAllAgents(agents: Agent[]): Promise<string[]> {
 
     console.log(`\nSynchronizing ${agents.length} agents on-chain...`);
 
-    let nonce = await signer.getNonce();
     const TARGET_BALANCE = 100;
     const TOTAL_NEEDED = agents.length * TARGET_BALANCE;
 
@@ -177,9 +371,14 @@ export async function registerAllAgents(agents: Agent[]): Promise<string[]> {
         // Each faucet call via router gives 100 vUSDC
         const tapsNeeded = Math.ceil(Number(ethers.formatUnits(neededWei - backendBalance, 18)) / 100);
         for (let i = 0; i < tapsNeeded; i++) {
-            const tx = await router.userFaucet({ nonce: nonce++ });
-            await tx.wait();
-            txHashes.push(tx.hash);
+            try {
+                const tx = await sendWithFreshNonce(signer, (nonce) => 
+                    router.userFaucet({ nonce, gasPrice: ethers.parseUnits("0.02", "gwei") })
+                );
+                txHashes.push(tx.hash);
+            } catch (error: any) {
+                console.error(`❌ Faucet tap failed:`, error?.message);
+            }
         }
     }
 
@@ -194,30 +393,44 @@ export async function registerAllAgents(agents: Agent[]): Promise<string[]> {
             // If agent has 0 balance, use the official registerAgent function to mint 500 vUSDC
             if (balance === 0) {
                 console.log(`   Registering agent to mint initial capital...`);
-                const tx = await router.registerAgent(agent.wallet.address, { nonce: nonce++ });
-                await tx.wait();
-                txHashes.push(tx.hash);
+                try {
+                    const tx = await sendWithFreshNonce(signer, (nonce) =>
+                        router.registerAgent(agent.wallet.address, { nonce, gasPrice: ethers.parseUnits("0.02", "gwei") })
+                    );
+                    txHashes.push(tx.hash);
 
-                // Update local balance view
-                const newBalanceWei = await vusdc.balanceOf(agent.wallet.address);
-                const excess = newBalanceWei - targetWei;
+                    // Update local balance view
+                    const newBalanceWei = await vusdc.balanceOf(agent.wallet.address);
+                    const excess = newBalanceWei - targetWei;
 
-                // Ensure agent has gas before transferring back
-                const eth = await prov.getBalance(agent.wallet.address);
-                if (eth < ethers.parseEther("0.05")) {
-                    const gasTx = await signer.sendTransaction({ to: agent.wallet.address, value: ethers.parseEther("0.1"), nonce: nonce++ });
-                    await gasTx.wait();
-                    txHashes.push(gasTx.hash);
+                    // Ensure agent has gas before transferring back
+                    const eth = await prov.getBalance(agent.wallet.address);
+                    if (eth < ethers.parseEther("0.05")) {
+                        const gasTx = await sendWithFreshNonce(signer, (nonce) =>
+                            signer.sendTransaction({ 
+                                to: agent.wallet.address, 
+                                value: ethers.parseEther("0.1"), 
+                                nonce,
+                                gasPrice: ethers.parseUnits("0.02", "gwei")
+                            })
+                        );
+                        txHashes.push(gasTx.hash);
+                    }
+
+                    const agentSigner = getAgentSigner(agent, prov);
+                    const agentVUSDC = vusdc.connect(agentSigner) as unknown as ERC20;
+                    const agentNonce = await prov.getTransactionCount(agent.wallet.address, 'pending');
+
+                    const returnTx = await agentVUSDC.transfer(signer.address, excess, { 
+                        nonce: agentNonce,
+                        gasPrice: ethers.parseUnits("0.02", "gwei")
+                    });
+                    await returnTx.wait();
+                    txHashes.push(returnTx.hash);
+                    console.log(`   Reset to 100 (and replenished backend)`);
+                } catch (error: any) {
+                    console.error(`   ❌ Registration failed:`, error?.message);
                 }
-
-                const agentSigner = getAgentSigner(agent, prov);
-                const agentVUSDC = vusdc.connect(agentSigner) as unknown as ERC20;
-                const agentNonce = await prov.getTransactionCount(agent.wallet.address);
-
-                const returnTx = await agentVUSDC.transfer(signer.address, excess, { nonce: agentNonce });
-                await returnTx.wait();
-                txHashes.push(returnTx.hash);
-                console.log(`   Reset to 100 (and replenished backend)`);
             } else if (balance > TARGET_BALANCE) {
                 const excess = balanceWei - targetWei;
                 const agentSigner = getAgentSigner(agent, prov);
@@ -226,30 +439,65 @@ export async function registerAllAgents(agents: Agent[]): Promise<string[]> {
                 // Ensure agent has gas
                 const eth = await prov.getBalance(agent.wallet.address);
                 if (eth < ethers.parseEther("0.05")) {
-                    const tx = await signer.sendTransaction({ to: agent.wallet.address, value: ethers.parseEther("0.1"), nonce: nonce++ });
-                    await tx.wait();
-                    txHashes.push(tx.hash);
+                    try {
+                        const tx = await sendWithFreshNonce(signer, (nonce) =>
+                            signer.sendTransaction({ 
+                                to: agent.wallet.address, 
+                                value: ethers.parseEther("0.1"), 
+                                nonce,
+                                gasPrice: ethers.parseUnits("0.02", "gwei")
+                            })
+                        );
+                        txHashes.push(tx.hash);
+                    } catch (error: any) {
+                        console.error(`   ❌ Gas transfer failed:`, error?.message);
+                    }
                 }
 
-                const agentNonce = await prov.getTransactionCount(agent.wallet.address);
-                const tx = await agentVUSDC.transfer(signer.address, excess, { nonce: agentNonce });
-                await tx.wait();
-                txHashes.push(tx.hash);
-                console.log(`   Reset to 100`);
+                try {
+                    const agentNonce = await prov.getTransactionCount(agent.wallet.address, 'pending');
+                    const tx = await agentVUSDC.transfer(signer.address, excess, { 
+                        nonce: agentNonce,
+                        gasPrice: ethers.parseUnits("0.02", "gwei")
+                    });
+                    await tx.wait();
+                    txHashes.push(tx.hash);
+                    console.log(`   Reset to 100`);
+                } catch (error: any) {
+                    console.error(`   ❌ Transfer failed:`, error?.message);
+                }
             } else if (balance < TARGET_BALANCE) {
                 const deficiency = targetWei - balanceWei;
-                const tx = await vusdc.transfer(agent.wallet.address, deficiency, { nonce: nonce++ });
-                await tx.wait();
-                txHashes.push(tx.hash);
-                console.log(`   Reset to 100`);
+                try {
+                    const tx = await sendWithFreshNonce(signer, (nonce) =>
+                        vusdc.transfer(agent.wallet.address, deficiency, { 
+                            nonce,
+                            gasPrice: ethers.parseUnits("0.02", "gwei")
+                        })
+                    );
+                    txHashes.push(tx.hash);
+                    console.log(`   Reset to 100`);
+                } catch (error: any) {
+                    console.error(`   ❌ Transfer failed:`, error?.message);
+                }
             }
 
             // Gas buffer
             const eth = await prov.getBalance(agent.wallet.address);
             if (eth < ethers.parseEther("0.1")) {
-                const tx = await signer.sendTransaction({ to: agent.wallet.address, value: ethers.parseEther("0.5"), nonce: nonce++ });
-                await tx.wait();
-                txHashes.push(tx.hash);
+                try {
+                    const tx = await sendWithFreshNonce(signer, (nonce) =>
+                        signer.sendTransaction({ 
+                            to: agent.wallet.address, 
+                            value: ethers.parseEther("0.5"), 
+                            nonce,
+                            gasPrice: ethers.parseUnits("0.02", "gwei")
+                        })
+                    );
+                    txHashes.push(tx.hash);
+                } catch (error: any) {
+                    console.error(`   ❌ Gas buffer failed:`, error?.message);
+                }
             }
 
             // Unlimited approval
@@ -258,15 +506,25 @@ export async function registerAllAgents(agents: Agent[]): Promise<string[]> {
             const currentAllowance = await agentVUSDC.allowance(agent.wallet.address, ROUTER_ADDRESS);
 
             if (currentAllowance < targetWei) {
-                const agentNonce = await prov.getTransactionCount(agent.wallet.address);
-                const tx = await agentVUSDC.approve(ROUTER_ADDRESS, ethers.MaxUint256, { nonce: agentNonce });
-                await tx.wait();
-                txHashes.push(tx.hash);
-                console.log(`   Approved Router`);
+                try {
+                    const agentNonce = await prov.getTransactionCount(agent.wallet.address, 'pending');
+                    const tx = await agentVUSDC.approve(ROUTER_ADDRESS, ethers.MaxUint256, { 
+                        nonce: agentNonce,
+                        gasPrice: ethers.parseUnits("0.02", "gwei")
+                    });
+                    await tx.wait();
+                    txHashes.push(tx.hash);
+                    console.log(`   Approved Router`);
+                } catch (error: any) {
+                    console.error(`   ❌ Approval failed:`, error?.message);
+                }
             }
         } catch (error: any) {
             console.error(`❌ Sync failed for ${agent.personality.name}:`, error?.message);
         }
+        
+        // Small delay between agents to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 1000));
     }
     return txHashes;
 }
@@ -285,10 +543,14 @@ export async function createProposalOnChain(
 ): Promise<{ yesToken: string; poolId: string; txHash: string } | null> {
     try {
         const router = getRouter();
+        const signer = getBackendSigner();
         const liquidityWei = ethers.parseUnits(liquidity.toString(), 18);
+        const gasPrice = ethers.parseUnits("0.02", "gwei");
 
+        const nonce = await signer.getNonce('pending');
         const tx = await router.createProposal(
-            proposalId, name, description, evalLogic, mathLogic, deadline, liquidityWei
+            proposalId, name, description, evalLogic, mathLogic, deadline, liquidityWei,
+            { nonce, gasPrice }
         );
         const receipt = await tx.wait();
 
@@ -321,7 +583,6 @@ export async function executeSwapOnChain(
         const prov = getProvider();
         const router = getRouter();
         const agentSigner = getAgentSigner(agent, prov);
-        let nonce = await prov.getTransactionCount(agent.wallet.address, 'latest');
 
         const agentRouter = (new ethers.Contract(ROUTER_ADDRESS, routerABI, agentSigner)) as unknown as VerdictRouter;
 
@@ -342,21 +603,61 @@ export async function executeSwapOnChain(
             'function balanceOf(address) view returns (uint256)'
         ], agentSigner) as unknown as ERC20;
 
-        const [bal, allowance] = await Promise.all([
+        const [bal, allowance, nativeBalance] = await Promise.all([
             token.balanceOf(agent.wallet.address),
-            token.allowance(agent.wallet.address, ROUTER_ADDRESS)
+            token.allowance(agent.wallet.address, ROUTER_ADDRESS),
+            prov.getBalance(agent.wallet.address)
         ]);
 
         if (bal < amountWei) return { success: false };
 
-        if (allowance < amountWei) {
-            await (await token.approve(ROUTER_ADDRESS, ethers.MaxUint256, { nonce: nonce++ })).wait();
+        // Check and refill gas if needed (agents need native MNT to pay for gas)
+        const GAS_THRESHOLD = ethers.parseEther("0.1"); // Minimum gas balance
+        const GAS_AMOUNT = ethers.parseEther("0.5"); // Amount to send
+        if (nativeBalance < GAS_THRESHOLD) {
+            try {
+                const signer = getBackendSigner();
+                const gasTx = await sendWithFreshNonce(signer, (nonce) =>
+                    signer.sendTransaction({
+                        to: agent.wallet.address,
+                        value: GAS_AMOUNT,
+                        nonce,
+                        gasPrice: ethers.parseUnits("0.02", "gwei")
+                    })
+                );
+                await gasTx.wait();
+                console.log(`   ⛽ Refilled gas for ${agent.personality.name}: ${ethers.formatEther(GAS_AMOUNT)} MNT`);
+            } catch (error: any) {
+                console.error(`   ❌ Failed to refill gas for ${agent.personality.name}:`, error?.message);
+                // Continue anyway - maybe they have enough
+            }
         }
 
-        const tx = await agentRouter.swap(proposalId, actualTokenIn, amountWei, minOutWei, { nonce });
-        await tx.wait();
+        const gasPrice = ethers.parseUnits("0.02", "gwei");
 
-        return { success: true, txHash: tx.hash };
+        // Handle approval with fresh nonce
+        if (allowance < amountWei) {
+            try {
+                await sendWithFreshNonceForAgent(agentSigner, async (nonce) => {
+                    return await token.approve(ROUTER_ADDRESS, ethers.MaxUint256, { nonce, gasPrice });
+                });
+            } catch (error: any) {
+                console.error(`❌ Approval failed for ${agent.personality.name}:`, error?.message);
+                return { success: false };
+            }
+        }
+
+        // Handle swap with fresh nonce
+        try {
+            const tx = await sendWithFreshNonceForAgent(agentSigner, async (nonce) => {
+                return await agentRouter.swap(proposalId, actualTokenIn, amountWei, minOutWei, { nonce, gasPrice });
+            });
+            await tx.wait();
+            return { success: true, txHash: tx.hash };
+        } catch (error: any) {
+            console.error(`❌ Swap failed for ${agent.personality.name}:`, error?.message);
+            return { success: false };
+        }
     } catch (error: any) {
         console.error(`❌ Swap failed for ${agent.personality.name}:`, error?.message);
         return { success: false };
@@ -420,7 +721,11 @@ export async function getPoolReserves(proposalId: string): Promise<{ vUSDC: numb
 
 export async function initializeMarketOnChain(duration: number): Promise<string | null> {
     try {
-        const tx = await getRouter().initializeMarket(duration);
+        const router = getRouter();
+        const signer = getBackendSigner();
+        const gasPrice = ethers.parseUnits("0.02", "gwei");
+        const nonce = await signer.getNonce('pending');
+        const tx = await router.initializeMarket(duration, { nonce, gasPrice });
         await tx.wait();
         return tx.hash;
     } catch { return null; }
@@ -433,6 +738,8 @@ export async function initializeMarketWithProposalsBatch(
     const router = getRouter();
     const signer = getBackendSigner();
     const txHashes: string[] = [];
+
+    const gasPrice = ethers.parseUnits("0.02", "gwei");
 
     // Try batch first (assuming contract has this method)
     try {
@@ -447,7 +754,8 @@ export async function initializeMarketWithProposalsBatch(
             initialLiquidity: ethers.parseUnits("2000", 18)
         }));
 
-        const tx = await router.initializeMarketWithProposals(duration, proposalsToCreate);
+        const nonce = await signer.getNonce('pending');
+        const tx = await router.initializeMarketWithProposals(duration, proposalsToCreate, { nonce, gasPrice });
         await tx.wait();
         txHashes.push(tx.hash);
         console.log(`Batch successful`);
@@ -458,18 +766,21 @@ export async function initializeMarketWithProposalsBatch(
 
     // Fallback: Sequential
     try {
-        let nonce = await signer.getNonce();
-        const initTx = await router.initializeMarket(duration, { nonce: nonce++ });
+        let nonce = await signer.getNonce('pending');
+        const initTx = await router.initializeMarket(duration, { nonce: nonce++, gasPrice });
         await initTx.wait();
         txHashes.push(initTx.hash);
 
         for (const p of proposals) {
             console.log(`Creating: ${p.name}...`);
+            nonce = await signer.getNonce('pending'); // Get fresh nonce for each proposal
             const tx = await router.createProposal(
-                p.id, p.name, p.description, p.evaluationLogic, p.mathematicalLogic, p.resolutionDeadline, ethers.parseUnits("2000", 18), { nonce: nonce++ }
+                p.id, p.name, p.description, p.evaluationLogic, p.mathematicalLogic, p.resolutionDeadline, ethers.parseUnits("2000", 18), { nonce: nonce++, gasPrice }
             );
             await tx.wait();
             txHashes.push(tx.hash);
+            // Small delay between proposals
+            await new Promise(resolve => setTimeout(resolve, 500));
         }
         return { success: true, txHashes };
     } catch { return { success: false, txHashes }; }
@@ -505,8 +816,12 @@ export async function getRoundInfoOnChain(): Promise<{
 
 export async function graduateProposalOnChain(proposalId: string, finalPrice: number): Promise<string | null> {
     try {
+        const router = getRouter();
+        const signer = getBackendSigner();
         const priceWei = ethers.parseUnits(finalPrice.toString(), 18);
-        const tx = await getRouter().graduateProposal(proposalId, priceWei);
+        const gasPrice = ethers.parseUnits("0.02", "gwei");
+        const nonce = await signer.getNonce('pending');
+        const tx = await router.graduateProposal(proposalId, priceWei, { nonce, gasPrice });
         await tx.wait();
         return tx.hash;
     } catch { return null; }

@@ -5,8 +5,9 @@ import { callLLMForYesNoStrategy } from '../llm';
 
 /**
  * Fallback yes-no strategy
+ * Note: agent.vUSD is synced from blockchain before this function is called (in processTradingRound)
  */
-function executeYesNoStrategyFallback(
+export function executeYesNoStrategyFallback(
   agent: Agent,
   market: MarketState,
   marketStrategy: MarketStrategy
@@ -19,6 +20,8 @@ function executeYesNoStrategyFallback(
   const tokenType = 'yes';
   const tokenHistory = marketStrategy.yesToken.history;
   const holdings = getAgentTokenHoldings(agent, marketStrategy.id, 'yes');
+  
+  // agent.vUSD contains the current blockchain balance (synced in processTradingRound)
 
   const avgPrice = tokenHistory.length > 0
     ? tokenHistory.reduce((sum, h) => sum + h.price, 0) / tokenHistory.length
@@ -83,20 +86,9 @@ export async function executeYesNoStrategy(
   market: MarketState,
   marketStrategy: MarketStrategy
 ): Promise<TradeDecision> {
-  // Try LLM API call first
-  const llmDecision = await callLLMForYesNoStrategy(agent, market, marketStrategy);
-  if (llmDecision) {
-    // Enforce YES only on LLM decision if it somehow returns NO (though LLM prompt was updated, safe to check)
-    if (llmDecision.tokenType === 'no') {
-      console.log(`[Strategy] LLM returned 'no' token type, forcing fallback to ensure YES compliance.`);
-      return executeYesNoStrategyFallback(agent, market, marketStrategy);
-    }
-    console.log(`[Strategy] ${agent.personality.name} using LLM decision (Google Gemini)`);
-    return llmDecision;
-  }
-
-  // Fallback to default strategy if LLM API fails
-  console.log(`[Strategy] ${agent.personality.name} using fallback strategy (LLM unavailable)`);
+  // Skip individual LLM calls - batch processing handles all yes-no agents together
+  // Individual calls cause rate limiting issues when batch is already being used
+  console.log(`[Strategy] ${agent.personality.name} using fallback strategy (batch processing handles LLM)`);
   return executeYesNoStrategyFallback(agent, market, marketStrategy);
 }
 

@@ -21,6 +21,7 @@ export function createServer(
 ) {
   return Bun.serve({
     port: 3000,
+    idleTimeout: 120, // 120 seconds timeout for long-running operations like balance reset
     async fetch(req) {
       const url = new URL(req.url);
 
@@ -305,6 +306,179 @@ export function createServer(
         });
       }
 
+      // Inject a custom proposal (before trading starts)
+      if (url.pathname === '/api/proposal/inject' && req.method === 'POST') {
+        try {
+          // Check if AI agents have generated proposals first
+          if (marketState.strategies.length === 0) {
+            return new Response(
+              JSON.stringify({ 
+                success: false, 
+                error: 'Cannot inject proposals before AI agents generate their proposals. Call /api/admin/init or /api/init/proposals first.' 
+              }),
+              { 
+                status: 400,
+                headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+              }
+            );
+          }
+
+          // Check if trading has started
+          if (tradingLoopInterval.id !== null) {
+            return new Response(
+              JSON.stringify({ 
+                success: false, 
+                error: 'Cannot inject proposals while trading is active' 
+              }),
+              { 
+                status: 400,
+                headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+              }
+            );
+          }
+
+          const body = await req.json();
+          const { name, description, evaluationLogic, mathematicalLogic, usedDataSources, resolutionDeadline, initialLiquidity } = body;
+
+          // Validate required fields
+          if (!name || !description || !evaluationLogic || !mathematicalLogic) {
+            return new Response(
+              JSON.stringify({ 
+                success: false, 
+                error: 'Missing required fields: name, description, evaluationLogic, mathematicalLogic' 
+              }),
+              { 
+                status: 400,
+                headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+              }
+            );
+          }
+
+          // Validate usedDataSources structure (must match AI-generated format)
+          if (!Array.isArray(usedDataSources) || usedDataSources.length === 0) {
+            return new Response(
+              JSON.stringify({ 
+                success: false, 
+                error: 'usedDataSources must be a non-empty array with data source objects' 
+              }),
+              { 
+                status: 400,
+                headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+              }
+            );
+          }
+
+          // Validate each data source has required fields
+          for (const ds of usedDataSources) {
+            if (typeof ds.id !== 'number' || 
+                typeof ds.currentValue !== 'number' || 
+                typeof ds.targetValue !== 'number' ||
+                typeof ds.operator !== 'string') {
+              return new Response(
+                JSON.stringify({ 
+                  success: false, 
+                  error: 'Each usedDataSource must have: id (number), currentValue (number), targetValue (number), operator (string)' 
+                }),
+                { 
+                  status: 400,
+                  headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+                }
+              );
+            }
+          }
+
+          const { createProposalOnChain } = await import('../blockchain');
+          
+          // Generate unique ID for the proposal
+          const proposalId = `custom-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+          
+          // Default values
+          const deadline = resolutionDeadline || Date.now() + (30 * 24 * 60 * 60 * 1000); // 30 days default
+          const liquidity = initialLiquidity || 2000; // 2000 vUSDC default
+
+          // Create proposal on-chain
+          const result = await createProposalOnChain(
+            proposalId,
+            name,
+            description,
+            evaluationLogic,
+            mathematicalLogic,
+            deadline,
+            liquidity
+          );
+
+          if (!result) {
+            return new Response(
+              JSON.stringify({ 
+                success: false, 
+                error: 'Failed to create proposal on-chain' 
+              }),
+              { 
+                status: 500,
+                headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+              }
+            );
+          }
+
+          // Add proposal to in-memory market state (matching AI-generated format exactly)
+          const now = Date.now();
+          const newStrategy = {
+            id: proposalId,
+            name,
+            description,
+            evaluationLogic,
+            mathematicalLogic,
+            usedDataSources: usedDataSources, // Required array with proper structure
+            resolutionDeadline: deadline,
+            timestamp: now,
+            resolved: false,
+            winner: null,
+            yesToken: {
+              tokenReserve: liquidity,
+              volume: 0,
+              history: [{ price: 0.5, timestamp: now }],
+              twap: 0.5,
+              twapHistory: [{ twap: 0.5, timestamp: now }]
+            },
+            noToken: {
+              tokenReserve: liquidity,
+              volume: 0,
+              history: [{ price: 0.5, timestamp: now }],
+              twap: 0.5,
+              twapHistory: [{ twap: 0.5, timestamp: now }]
+            }
+          };
+
+          marketState.strategies.push(newStrategy);
+
+          return new Response(
+            JSON.stringify({
+              success: true,
+              message: 'Proposal injected successfully',
+              proposal: {
+                id: proposalId,
+                name,
+                yesToken: result.yesToken,
+                poolId: result.poolId,
+                txHash: result.txHash
+              }
+            }),
+            { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        } catch (error: any) {
+          return new Response(
+            JSON.stringify({ 
+              success: false, 
+              error: error.message 
+            }),
+            {
+              status: 500,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            }
+          );
+        }
+      }
+
       // Admin: Initialize market (Generate strategies and agents)
       if (url.pathname === '/api/admin/init' && req.method === 'POST') {
         try {
@@ -380,13 +554,55 @@ export function createServer(
       if (url.pathname === '/api/trade/start' && req.method === 'POST') {
         try {
           const { startTradingLoop } = await import('../engine/trading');
+          const { resetAgentBalancesTo100, getAgentVUSDCBalance } = await import('../blockchain');
+          const { log } = await import('../core/logger');
 
           if (marketState.roundStartTime === 0) {
+            // Set roundStartTime FIRST to prevent concurrent calls
             marketState.roundStartTime = Date.now();
             marketState.roundEndTime = marketState.roundStartTime + marketState.roundDuration;
+
+            // New round starting - reset agent balances to 100 vUSDC
+            if (agents.length > 0) {
+              log('Trading', `Resetting ${agents.length} agent balances to 100 vUSDC for new round...`);
+              try {
+                const resetResult = await resetAgentBalancesTo100(agents);
+                if (resetResult.success) {
+                  log('Trading', `✅ Agent balances reset to 100 vUSDC via batch contract function`);
+                  if (resetResult.txHash) {
+                    log('Trading', `   Transaction: ${resetResult.txHash}`, 'debug');
+                  }
+                  
+                  // Verify all balances are reset (wait a bit for blockchain to update)
+                  log('Trading', `Verifying agent balances...`);
+                  await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds for blockchain to update
+                  
+                  let allBalancesReset = true;
+                  for (const agent of agents) {
+                    const balance = await getAgentVUSDCBalance(agent.wallet.address);
+                    if (Math.abs(balance - 100) > 0.1) {
+                      log('Trading', `⚠️ ${agent.personality.name} balance is ${balance.toFixed(2)}, expected ~100`, 'warn');
+                      allBalancesReset = false;
+                    }
+                  }
+                  
+                  if (allBalancesReset) {
+                    log('Trading', `✅ All agent balances verified at 100 vUSDC`);
+                  } else {
+                    log('Trading', `⚠️ Some agent balances may not be exactly 100, but proceeding`, 'warn');
+                  }
+                } else {
+                  log('Trading', `⚠️ Balance reset failed, continuing anyway`, 'warn');
+                }
+              } catch (error: any) {
+                log('Trading', `⚠️ Balance reset failed: ${error.message}, continuing anyway`, 'warn');
+              }
+            }
           }
 
+          // Start trading loop AFTER balance reset is complete
           startTradingLoop(marketState, agents, tradingLoopInterval);
+          
           return new Response(
             JSON.stringify({
               success: true,

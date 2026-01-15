@@ -1,0 +1,16 @@
+{
+  "_format": "hh-sol-artifact-1",
+  "contractName": "CircularBuffer",
+  "sourceName": "contracts/utils/@openzeppelin/contracts/utils/structs/CircularBuffer.sol",
+  "abi": [
+    {
+      "inputs": [],
+      "name": "InvalidBufferSize",
+      "type": "error"
+    }
+  ],
+  "bytecode": "0x60556032600b8282823980515f1a607314602657634e487b7160e01b5f525f60045260245ffd5b305f52607381538281f3fe730000000000000000000000000000000000000000301460806040525f80fdfea26469706673582212208e2aa4356eacb1d608c3941dba49b16da8eb0de7341a4b8fcc175e9bea9b693764736f6c634300081a0033",
+  "deployedBytecode": "0x730000000000000000000000000000000000000000301460806040525f80fdfea26469706673582212208e2aa4356eacb1d608c3941dba49b16da8eb0de7341a4b8fcc175e9bea9b693764736f6c634300081a0033",
+  "linkReferences": {},
+  "deployedLinkReferences": {}
+}

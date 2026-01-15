@@ -2,7 +2,6 @@ import type { Agent, MarketState, MarketStrategy, TradeDecision } from '../core/
 import { getYESPrice, getNOPrice, calculateYESForVUSD, calculateNOForVUSD } from '../engine/amm';
 import { getAgentTokenHoldings } from '../agents';
 import { log } from '../core/logger';
-import { GoogleGenAI } from '@google/genai';
 import { getAllDataSources, type DataSource, SUPPORTED_EXCHANGE_RATE_CURRENCIES, NON_PREMIUM_INFLATION_COUNTRIES } from './dataSources';
 import { handleOpenAIToolConversation, simpleGeminiCompletion } from './tools';
 import { config, isDev } from '../core/config';
@@ -10,11 +9,6 @@ import { config, isDev } from '../core/config';
 // Google Gemini API configuration
 const GEMINI_API_KEY = config.gemini.apiKey;
 const GEMINI_MODEL = config.gemini.model;
-
-// Initialize Google Gemini client
-const ai = new GoogleGenAI({
-  apiKey: GEMINI_API_KEY,
-});
 
 /**
  * LLM API call for all agents using yes-no strategy (batched) - ALL strategies in one call
@@ -158,7 +152,7 @@ ${agentsContext.map((agent, idx) => `
 Agent ${idx + 1}: ${agent.name} (${agent.id})
 - Risk Tolerance: ${agent.personality.riskTolerance}
 - Aggressiveness: ${agent.personality.aggressiveness}
-- vUSD Balance: $${agent.vUSD.toFixed(2)}
+- CURRENT vUSD Balance (from blockchain): $${agent.vUSD.toFixed(2)} - Use this EXACT balance for calculations
 - Current Profit: $${agent.currentProfit.toFixed(2)}
 - Holdings per Proposal:
 ${agent.strategyHoldings.map(sh => `  - ${sh.strategyName}: YES=${sh.yesHoldings}, NO=${sh.noHoldings}`).join('\n')}
@@ -205,9 +199,9 @@ IMPORTANT RULES:
 - Each agent's reasoning must be in FIRST PERSON and explain why they chose that specific proposal (e.g., "I'm focusing on Tech Sector Growth because..." not "Bullish Bob sees...")
 - Keep reasoning concise (max 50 words)
 - CRITICAL CONSTRAINTS:
-  * If action is "buy", quantity must be affordable with agent's vUSD balance (check vUSD Balance in agent info)
+  * If action is "buy", quantity must be affordable with agent's CURRENT vUSD balance (check "CURRENT vUSD Balance" in agent info - this is the LATEST balance from blockchain)
   * If action is "sell", agent MUST have YES tokens to sell (check YES Holdings in agent info)
-  * Agents start with 100 vUSD and 0 YES tokens - they CANNOT sell on their first decision
+  * Use the EXACT "CURRENT vUSD Balance" shown in agent info for all calculations - this is synced from blockchain
   * Only use "tokenType": "yes" (NO tokens don't exist as separate tokens)
 - Be true to each agent's personality traits - an optimistic agent might buy aggressively on one proposal, while a cautious one might hold or choose a safer proposal
 - Agents should focus on the proposal that aligns best with their personality and current market analysis`;
@@ -223,7 +217,7 @@ IMPORTANT RULES:
       fullPrompt,
       agents,
       market,
-      5 // Max 5 tool calls for trading decisions
+      3 // Max 3 tool calls for trading decisions (reduced to avoid rate limits)
     );
 
     console.log(`[LLM] Received batch response from Gemini`);
@@ -459,7 +453,7 @@ TWAP Difference: ${(twapDiff * 100).toFixed(2)}% (${twapDiff > 0 ? 'YES leading'
 === YOUR POSITION ===
 YES Tokens: ${yesHoldings}
 NO Tokens: ${noHoldings}
-vUSD Balance: $${agent.vUSD.toFixed(2)}
+CURRENT vUSD Balance (from blockchain): $${agent.vUSD.toFixed(2)} - Use this EXACT balance for all calculations
 Total Value: $${(agent.vUSD + yesHoldings * yesPrice + noHoldings * noPrice).toFixed(2)}
 
 === DECISION OPTIONS ===
@@ -477,24 +471,20 @@ Based on your personality, the market data, and timing context, make a trading d
 }
 
 Important constraints:
-- If action is "buy", quantity must be affordable with your vUSD balance
+- If action is "buy", quantity must be affordable with your CURRENT vUSD balance shown above (this is the LATEST balance synced from blockchain)
 - If action is "sell", quantity cannot exceed your holdings for the chosen token type
 - If action is "hold", quantity must be 0 (you can hold to wait for better opportunities)
+- Use the EXACT "CURRENT vUSD Balance" shown above for all calculations - this is synced from blockchain
 - Consider the timing: you make decisions every 2 seconds, resolution happens after ~${market.roundsUntilResolution} rounds
 - Be true to your personality traits and trading philosophy`;
 
   try {
-    // Call Google Gemini API
+    // Call Gemini via OpenAI SDK (consistent with other LLM calls)
     const systemPrompt = 'You are a trading agent AI. Respond only with valid JSON.';
     const fullPrompt = `${systemPrompt}\n\n${prompt}`;
 
-    console.log(`[LLM] Making API call to Google Gemini...`);
-    const response = await ai.models.generateContent({
-      model: GEMINI_MODEL,
-      contents: fullPrompt,
-    });
-
-    const content = response.text;
+    console.log(`[LLM] Making API call to Gemini via OpenAI SDK...`);
+    const content = await simpleGeminiCompletion(fullPrompt);
 
     console.log(`[LLM] Received response from Gemini`);
     console.log(`[LLM] Raw LLM Response:\n${content}\n`);
@@ -687,7 +677,7 @@ CRITICAL RULES:
       fullPrompt,
       [], // No agents yet during initialization
       { strategies: [] } as any, // Dummy market state
-      10 // Max 10 tool calls
+      3 // Max 3 tool calls (reduced to avoid rate limits)
     );
 
     console.log(`[LLM] Received response from Gemini`);

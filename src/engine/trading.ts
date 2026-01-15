@@ -100,33 +100,81 @@ async function executeQueuedTrades(
 
             if (decision.action === 'buy') {
               tokenIn = vUSDCAddress || '0xa16E02E87b7454126E5E10d957A927A7F5B5d2be';
-              amountIn = Math.floor(decision.quantity * decision.price);
+              // For buy: amountIn is vUSD to spend
+              // decision.quantity is the number of YES tokens desired
+              // decision.price is the price per YES token
+              // So vUSD needed = quantity * price
+              const strategy = marketState.strategies.find(s => s.id === decision.strategyId);
+              if (strategy && decision.quantity > 0) {
+                // Use current price from reserves if decision.price seems invalid
+                const currentPrice = getYESPrice(strategy.yesToken.tokenReserve, strategy.noToken.tokenReserve);
+                const priceToUse = (decision.price && decision.price > 0) ? decision.price : currentPrice;
+                const estimatedVUSD = decision.quantity * priceToUse;
+                amountIn = Math.max(1, Math.floor(estimatedVUSD)); // Minimum 1 vUSD
+              } else {
+                // Fallback: use decision values or minimum
+                amountIn = Math.max(1, Math.floor(decision.quantity * (decision.price || 0.5)));
+              }
             } else {
               tokenIn = await blockchain.getYesTokenAddress(decision.strategyId);
-              amountIn = decision.quantity;
+              amountIn = Math.max(1, Math.floor(decision.quantity)); // Minimum 1 token
             }
 
-            log('Trading', `[${agent.personality.name}] Initiating on-chain ${decision.action.toUpperCase()} for ${decision.tokenType.toUpperCase()}`);
+            log('Trading', `[${agent.personality.name}] Initiating on-chain ${decision.action.toUpperCase()} for ${decision.tokenType.toUpperCase()}: quantity=${decision.quantity}, price=${decision.price?.toFixed(4) || 'N/A'}, amountIn=${amountIn}`);
 
             if (!tokenIn) {
               throw new Error(`Could not determine token address for ${decision.tokenType}`);
             }
 
-            const swapResult = await executeSwapOnChain(
-              agent,
-              decision.strategyId,
-              tokenIn,
-              amountIn,
-              0
-            );
-
-            if (swapResult.success) {
-              onChainSuccess = true;
-              currentTxHash = swapResult.txHash;
-              const { config } = await import('../core/config');
-              log('Trading', `[${agent.personality.name}] Transaction confirmed: ${config.blockchain.blockExplorerUrl}/tx/${currentTxHash}`);
+            // Validate amountIn before attempting swap
+            if (amountIn <= 0 || decision.quantity <= 0) {
+              log('Trading', `[${agent.personality.name}] Invalid swap parameters: amountIn=${amountIn}, quantity=${decision.quantity}, skipping swap`, 'warn');
+              onChainSuccess = false;
             } else {
-              log('Trading', `[${agent.personality.name}] Transaction failed on-chain`, 'error');
+              const swapResult = await executeSwapOnChain(
+                agent,
+                decision.strategyId,
+                tokenIn,
+                amountIn,
+                0
+              );
+
+              if (swapResult.success && swapResult.txHash) {
+                onChainSuccess = true;
+                currentTxHash = swapResult.txHash;
+                const { config } = await import('../core/config');
+                log('Trading', `[${agent.personality.name}] Transaction confirmed: ${config.blockchain.blockExplorerUrl}/tx/${currentTxHash}`);
+                
+                // Sync agent balance from chain before executing trade
+                try {
+                  const { getAgentVUSDCBalance } = await import('../blockchain');
+                  const updatedBalance = await getAgentVUSDCBalance(agent.wallet.address);
+                  agent.vUSD = updatedBalance;
+                  log('Trading', `[${agent.personality.name}] Synced balance from chain: ${updatedBalance.toFixed(2)} vUSD`, 'debug');
+                } catch (err) {
+                  log('Trading', `[${agent.personality.name}] Failed to sync balance: ${err}`, 'warn');
+                }
+                
+                // Only add trade to agent.trades AFTER transaction is confirmed on-chain
+                log('Trading', `[${agent.personality.name}] Calling executeTrade with txHash: ${currentTxHash}`, 'debug');
+                executeTrade(decision, agents, marketState, currentTxHash);
+                
+                // Verify trade was added
+                const agentAfterTrade = agents.find(a => a.id === decision.agentId);
+                if (agentAfterTrade) {
+                  const lastTrade = agentAfterTrade.trades[agentAfterTrade.trades.length - 1];
+                  if (lastTrade && lastTrade.txHash === currentTxHash) {
+                    log('Trading', `[${agent.personality.name}] ✅ Trade successfully added to agent.trades (total trades: ${agentAfterTrade.trades.length})`, 'debug');
+                  } else {
+                    log('Trading', `[${agent.personality.name}] ⚠️ Trade NOT found in agent.trades after executeTrade call!`, 'warn');
+                  }
+                }
+                
+                executedCount++;
+                log('Trading', `[${executedCount}/${totalTrades}] Execution complete for ${agent.personality.name} on "${strategyName}"`);
+              } else {
+                log('Trading', `[${agent.personality.name}] Transaction failed on-chain`, 'error');
+              }
             }
           }
         } catch (err) {
@@ -135,19 +183,13 @@ async function executeQueuedTrades(
         }
       } else {
         onChainSuccess = true;
-      }
-
-      if (onChainSuccess) {
+        // For simulation mode, execute trade without txHash
         executeTrade(decision, agents, marketState);
-
-        const lastTrade = agent.trades[agent.trades.length - 1];
-        if (currentTxHash && lastTrade) {
-          lastTrade.txHash = currentTxHash;
-        }
-
         executedCount++;
         log('Trading', `[${executedCount}/${totalTrades}] Execution complete for ${agent.personality.name} on "${strategyName}"`);
-      } else {
+      }
+
+      if (!onChainSuccess) {
         log('Trading', `[${agent.personality.name}] Aborted local state update due to execution failure`, 'warn');
       }
     } else {
@@ -163,17 +205,25 @@ async function executeQueuedTrades(
 
 /**
  * Execute trade using Constant Product AMM
+ * @param txHash Optional transaction hash - if provided, trade is only added after on-chain confirmation
  */
 export function executeTrade(
   decision: TradeDecision,
   agents: Agent[],
-  marketState: MarketState
+  marketState: MarketState,
+  txHash?: string
 ): void {
   const agent = agents.find(a => a.id === decision.agentId);
-  if (!agent) return;
+  if (!agent) {
+    log('Trading', `[executeTrade] Agent not found: ${decision.agentId}`, 'warn');
+    return;
+  }
 
   const marketStrategy = marketState.strategies.find(s => s.id === decision.strategyId);
-  if (!marketStrategy || marketStrategy.resolved) return;
+  if (!marketStrategy || marketStrategy.resolved) {
+    log('Trading', `[executeTrade] Strategy not found or resolved: ${decision.strategyId}`, 'warn');
+    return;
+  }
 
   const yesToken = marketStrategy.yesToken;
   const noToken = marketStrategy.noToken;
@@ -182,7 +232,11 @@ export function executeTrade(
     if (decision.tokenType === 'yes') {
       const estimatedVUSD = decision.quantity * getYESPrice(yesToken.tokenReserve, noToken.tokenReserve);
 
-      if (agent.vUSD >= estimatedVUSD && estimatedVUSD > 0) {
+      // If txHash is provided, on-chain transaction already succeeded - skip balance check
+      const shouldExecute = txHash ? true : (agent.vUSD >= estimatedVUSD && estimatedVUSD > 0);
+      
+      if (shouldExecute) {
+        log('Trading', `[executeTrade] Executing BUY YES: agent.vUSD=${agent.vUSD.toFixed(2)}, estimatedVUSD=${estimatedVUSD.toFixed(2)}, quantity=${decision.quantity}`, 'debug');
         const minted = mintDecisionTokens(estimatedVUSD, yesToken.tokenReserve, noToken.tokenReserve);
 
         yesToken.tokenReserve += minted.yesTokensOut;
@@ -196,30 +250,43 @@ export function executeTrade(
 
         const totalYESReceived = minted.yesTokensOut + additionalYES;
 
-        agent.vUSD -= estimatedVUSD;
+        // Only deduct vUSD if not already done on-chain (when txHash is provided, balance already synced)
+        if (!txHash) {
+          agent.vUSD -= estimatedVUSD;
+        }
         updateAgentTokenHoldings(agent, decision.strategyId, 'yes', totalYESReceived);
 
         const currentPrice = getYESPrice(yesToken.tokenReserve, noToken.tokenReserve);
 
-        agent.trades.push({
-          type: 'buy',
+        const tradeEntry = {
+          type: 'buy' as const,
           strategyId: decision.strategyId,
-          tokenType: 'yes',
+          tokenType: 'yes' as const,
           price: currentPrice,
           quantity: totalYESReceived,
           timestamp: Date.now(),
           reasoning: decision.reasoning || `${agent.personality.name} acquired YES tokens`,
-        });
+          txHash: txHash, // Add txHash when trade is added (only after on-chain confirmation)
+        };
+        
+        agent.trades.push(tradeEntry);
+        log('Trading', `[executeTrade] Added trade for ${agent.personality.name}: ${tradeEntry.type} ${tradeEntry.quantity} ${tradeEntry.tokenType} @ $${tradeEntry.price.toFixed(4)} (txHash: ${txHash || 'none'})`, 'debug');
 
         yesToken.volume += totalYESReceived;
         yesToken.history.push({ price: currentPrice, timestamp: Date.now() });
         if (yesToken.history.length > 100) yesToken.history.shift();
         updateTWAP(yesToken);
+      } else {
+        log('Trading', `[executeTrade] BUY YES condition failed: agent.vUSD=${agent.vUSD.toFixed(2)}, estimatedVUSD=${estimatedVUSD.toFixed(2)}, quantity=${decision.quantity}`, 'warn');
       }
     } else {
       const estimatedVUSD = decision.quantity * getNOPrice(yesToken.tokenReserve, noToken.tokenReserve);
 
-      if (agent.vUSD >= estimatedVUSD && estimatedVUSD > 0) {
+      // If txHash is provided, on-chain transaction already succeeded - skip balance check
+      const shouldExecute = txHash ? true : (agent.vUSD >= estimatedVUSD && estimatedVUSD > 0);
+      
+      if (shouldExecute) {
+        log('Trading', `[executeTrade] Executing BUY NO: agent.vUSD=${agent.vUSD.toFixed(2)}, estimatedVUSD=${estimatedVUSD.toFixed(2)}, quantity=${decision.quantity}`, 'debug');
         const minted = mintDecisionTokens(estimatedVUSD, yesToken.tokenReserve, noToken.tokenReserve);
         yesToken.tokenReserve += minted.yesTokensOut;
         noToken.tokenReserve += minted.noTokensOut;
@@ -232,31 +299,44 @@ export function executeTrade(
 
         const totalNOReceived = minted.noTokensOut + additionalNO;
 
-        agent.vUSD -= estimatedVUSD;
+        // Only deduct vUSD if not already done on-chain (when txHash is provided, balance already synced)
+        if (!txHash) {
+          agent.vUSD -= estimatedVUSD;
+        }
         updateAgentTokenHoldings(agent, decision.strategyId, 'no', totalNOReceived);
 
         const currentPrice = getNOPrice(yesToken.tokenReserve, noToken.tokenReserve);
 
-        agent.trades.push({
-          type: 'buy',
+        const tradeEntry = {
+          type: 'buy' as const,
           strategyId: decision.strategyId,
-          tokenType: 'no',
+          tokenType: 'no' as const,
           price: currentPrice,
           quantity: totalNOReceived,
           timestamp: Date.now(),
           reasoning: decision.reasoning || `${agent.personality.name} acquired NO tokens`,
-        });
+          txHash: txHash, // Add txHash when trade is added (only after on-chain confirmation)
+        };
+        
+        agent.trades.push(tradeEntry);
+        log('Trading', `[executeTrade] Added trade for ${agent.personality.name}: ${tradeEntry.type} ${tradeEntry.quantity} ${tradeEntry.tokenType} @ $${tradeEntry.price.toFixed(4)} (txHash: ${txHash || 'none'})`, 'debug');
 
         noToken.volume += totalNOReceived;
         noToken.history.push({ price: currentPrice, timestamp: Date.now() });
         if (noToken.history.length > 100) noToken.history.shift();
         updateTWAP(noToken);
+      } else {
+        log('Trading', `[executeTrade] BUY NO condition failed: agent.vUSD=${agent.vUSD.toFixed(2)}, estimatedVUSD=${estimatedVUSD.toFixed(2)}, quantity=${decision.quantity}`, 'warn');
       }
     }
   } else if (decision.action === 'sell' && decision.quantity > 0) {
     const holdings = getAgentTokenHoldings(agent, decision.strategyId, decision.tokenType);
 
-    if (holdings >= decision.quantity) {
+    // If txHash is provided, on-chain transaction already succeeded - skip holdings check
+    const shouldExecute = txHash ? true : (holdings >= decision.quantity);
+    
+    if (shouldExecute) {
+      log('Trading', `[executeTrade] Executing SELL: holdings=${holdings.toFixed(2)}, quantity=${decision.quantity}, tokenType=${decision.tokenType}`, 'debug');
       if (decision.tokenType === 'yes') {
         const noTokensReceived = calculateNOForYES(decision.quantity, yesToken.tokenReserve, noToken.tokenReserve);
 
@@ -268,26 +348,34 @@ export function executeTrade(
         yesToken.tokenReserve -= vUSDReceived;
         noToken.tokenReserve -= vUSDReceived;
 
-        agent.vUSD += vUSDReceived;
+        // Only add vUSD if not already done on-chain (when txHash is provided, balance already synced)
+        if (!txHash) {
+          agent.vUSD += vUSDReceived;
+        }
         updateAgentTokenHoldings(agent, decision.strategyId, 'yes', -decision.quantity);
 
         const currentPrice = getYESPrice(yesToken.tokenReserve, noToken.tokenReserve);
 
-        agent.trades.push({
-          type: 'sell',
+        const tradeEntry = {
+          type: 'sell' as const,
           strategyId: decision.strategyId,
-          tokenType: 'yes',
+          tokenType: 'yes' as const,
           price: currentPrice,
           quantity: decision.quantity,
           timestamp: Date.now(),
           reasoning: decision.reasoning || `${agent.personality.name} liquidated YES tokens`,
-        });
+          txHash: txHash, // Add txHash when trade is added (only after on-chain confirmation)
+        };
+        
+        agent.trades.push(tradeEntry);
+        log('Trading', `[executeTrade] Added trade for ${agent.personality.name}: ${tradeEntry.type} ${tradeEntry.quantity} ${tradeEntry.tokenType} @ $${tradeEntry.price.toFixed(4)} (txHash: ${txHash || 'none'})`, 'debug');
 
         yesToken.volume += decision.quantity;
         yesToken.history.push({ price: currentPrice, timestamp: Date.now() });
         if (yesToken.history.length > 100) yesToken.history.shift();
         updateTWAP(yesToken);
       } else {
+        // Sell NO tokens
         const yesTokensReceived = calculateYESForNO(decision.quantity, yesToken.tokenReserve, noToken.tokenReserve);
 
         yesToken.tokenReserve -= yesTokensReceived;
@@ -298,27 +386,38 @@ export function executeTrade(
         yesToken.tokenReserve -= vUSDReceived;
         noToken.tokenReserve -= vUSDReceived;
 
-        agent.vUSD += vUSDReceived;
+        // Only add vUSD if not already done on-chain (when txHash is provided, balance already synced)
+        if (!txHash) {
+          agent.vUSD += vUSDReceived;
+        }
         updateAgentTokenHoldings(agent, decision.strategyId, 'no', -decision.quantity);
 
         const currentPrice = getNOPrice(yesToken.tokenReserve, noToken.tokenReserve);
 
-        agent.trades.push({
-          type: 'sell',
+        const tradeEntry = {
+          type: 'sell' as const,
           strategyId: decision.strategyId,
-          tokenType: 'no',
+          tokenType: 'no' as const,
           price: currentPrice,
           quantity: decision.quantity,
           timestamp: Date.now(),
           reasoning: decision.reasoning || `${agent.personality.name} liquidated NO tokens`,
-        });
+          txHash: txHash, // Add txHash when trade is added (only after on-chain confirmation)
+        };
+        
+        agent.trades.push(tradeEntry);
+        log('Trading', `[executeTrade] Added trade for ${agent.personality.name}: ${tradeEntry.type} ${tradeEntry.quantity} ${tradeEntry.tokenType} @ $${tradeEntry.price.toFixed(4)} (txHash: ${txHash || 'none'})`, 'debug');
 
         noToken.volume += decision.quantity;
         noToken.history.push({ price: currentPrice, timestamp: Date.now() });
         if (noToken.history.length > 100) noToken.history.shift();
         updateTWAP(noToken);
       }
+    } else {
+      log('Trading', `[executeTrade] SELL condition failed: holdings=${holdings.toFixed(2)}, quantity=${decision.quantity}, tokenType=${decision.tokenType}`, 'warn');
     }
+  } else if (decision.action !== 'hold') {
+    log('Trading', `[executeTrade] Invalid action or quantity: action=${decision.action}, quantity=${decision.quantity}`, 'warn');
   }
 
   marketStrategy.timestamp = Date.now();
@@ -459,8 +558,21 @@ export async function processTradingRound(
 
         for (const agent of yesNoAgents) {
           if (!batchDecisions.has(agent.id)) {
-            const { executeStrategy } = await import('./strategies');
-            const fallbackDecision = await executeStrategy(agent, marketState);
+            // Use fallback strategy directly - don't retry LLM calls (already rate limited or batch failed)
+            const { executeYesNoStrategyFallback } = await import('./strategies');
+            const { selectStrategyForAgent } = await import('../agents');
+            const marketStrategy = selectStrategyForAgent(agent, marketState);
+            const fallbackDecision = marketStrategy 
+              ? executeYesNoStrategyFallback(agent, marketState, marketStrategy)
+              : {
+                  agentId: agent.id,
+                  action: 'hold' as const,
+                  strategyId: '',
+                  tokenType: 'yes' as const,
+                  quantity: 0,
+                  price: 0,
+                  reasoning: 'No active strategies available',
+                };
 
             agent.roundMemory.push({
               action: fallbackDecision.action,

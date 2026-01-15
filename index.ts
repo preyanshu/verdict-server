@@ -22,22 +22,7 @@ log('System', 'Establishing blockchain connection layer...');
 initBlockchain().then(async success => {
     if (success) {
         log('System', 'Blockchain connectivity established');
-
-        // Fetch graduated proposals from contract on startup
-        try {
-            const { fetchGraduatedProposalsOnChain } = await import('./src/blockchain');
-            const { syncGraduatedProposals } = await import('./src/core/db');
-
-            const historicalGraduated = await fetchGraduatedProposalsOnChain();
-            if (historicalGraduated.length > 0) {
-                syncGraduatedProposals(historicalGraduated);
-                log('System', `Synchronized ${historicalGraduated.length} historical graduated proposals from on-chain state`);
-            } else {
-                log('System', 'No historical graduated proposals detected on-chain');
-            }
-        } catch (err) {
-            log('System', `Historical state synchronization error: ${err}`, 'error');
-        }
+        log('System', 'Ready for proposal generation via /api/admin/init');
     } else {
         log('System', 'Blockchain connectivity failed; entering simulation fallback mode', 'warn');
     }
