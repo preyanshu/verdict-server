@@ -154,11 +154,28 @@ export function getAgentGasFunding(): { threshold: bigint; amount: bigint } {
  * Switch to fallback RPC provider
  */
 async function switchToFallbackProvider(): Promise<boolean> {
-    const network = config.blockchain.network as keyof typeof config.blockchain;
-    const networkConfig = (config.blockchain as any).networkConfig;
+    // Get fallback URLs from NETWORKS config
+    const NETWORKS = {
+        arbitrum: {
+            fallbackRpcUrls: [
+                'https://sepolia-rollup.arbitrum.io/rpc',
+                'https://arbitrum-sepolia-rpc.publicnode.com',
+            ],
+        },
+        mantle: {
+            fallbackRpcUrls: [
+                'https://rpc.sepolia.mantle.xyz/',
+            ],
+        },
+        hardhat: {
+            fallbackRpcUrls: [],
+        },
+    };
     
-    // Get fallback URLs from config
-    const fallbackUrls = (networkConfig?.fallbackRpcUrls as string[]) || [];
+    const network = config.blockchain.network as keyof typeof NETWORKS;
+    const networkConfig = NETWORKS[network] || { fallbackRpcUrls: [] };
+    const fallbackUrls = networkConfig.fallbackRpcUrls || [];
+    
     if (fallbackUrls.length === 0) {
         console.log('⚠️  No fallback RPC URLs configured');
         return false;
@@ -225,9 +242,26 @@ export async function handleRateLimitError(error: any): Promise<boolean> {
 export async function initBlockchain(): Promise<boolean> {
     try {
         // Setup RPC URLs list (primary + fallbacks)
-        const network = config.blockchain.network as keyof typeof config.blockchain;
-        const networkConfig = (config.blockchain as any).networkConfig;
-        const fallbackUrls = (networkConfig?.fallbackRpcUrls as string[]) || [];
+        const NETWORKS = {
+            arbitrum: {
+                fallbackRpcUrls: [
+                    'https://sepolia-rollup.arbitrum.io/rpc',
+                    'https://arbitrum-sepolia-rpc.publicnode.com',
+                ],
+            },
+            mantle: {
+                fallbackRpcUrls: [
+                    'https://rpc.sepolia.mantle.xyz/',
+                ],
+            },
+            hardhat: {
+                fallbackRpcUrls: [],
+            },
+        };
+        
+        const network = config.blockchain.network as keyof typeof NETWORKS;
+        const networkConfig = NETWORKS[network] || { fallbackRpcUrls: [] };
+        const fallbackUrls = networkConfig.fallbackRpcUrls || [];
         rpcUrls = [config.blockchain.rpcUrl, ...fallbackUrls];
         currentRpcIndex = 0;
         
@@ -398,20 +432,48 @@ async function sendWithFreshNonceForAgent(
         try {
             const prov = getProvider();
             const address = await agentSigner.getAddress();
-            const nonce = await prov.getTransactionCount(address, 'pending');
+            
+            // Get nonce with error handling for RPC failures
+            let nonce: number;
+            try {
+                nonce = await prov.getTransactionCount(address, 'pending');
+            } catch (nonceError: any) {
+                // Handle RPC errors when getting nonce (including "missing revert data")
+                if (nonceError?.code === 429 || nonceError?.message?.includes('rate limit') || nonceError?.message?.includes('exceeded') || nonceError?.code === 'CALL_EXCEPTION' || nonceError?.message?.includes('missing revert data')) {
+                    const switched = await handleRateLimitError(nonceError);
+                    if (switched && attempt < maxRetries - 1) {
+                        // Provider switched, retry immediately
+                        continue;
+                    }
+                }
+                throw nonceError;
+            }
+            
             const tx = await fn(nonce);
             
             // Wait with 60s timeout to prevent hanging on slow networks
-            await Promise.race([
-                tx.wait(),
-                new Promise((_, reject) => setTimeout(() => reject(new Error('Transaction timeout after 60s')), 60000))
-            ]);
+            try {
+                await Promise.race([
+                    tx.wait(),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('Transaction timeout after 60s')), 60000))
+                ]);
+            } catch (waitError: any) {
+                // If wait fails due to RPC issues, try switching provider
+                if (waitError?.code === 429 || waitError?.message?.includes('rate limit') || waitError?.code === 'CALL_EXCEPTION' || waitError?.message?.includes('missing revert data')) {
+                    const switched = await handleRateLimitError(waitError);
+                    if (switched && attempt < maxRetries - 1) {
+                        // Provider switched, retry the transaction
+                        continue;
+                    }
+                }
+                throw waitError;
+            }
             
             await new Promise(resolve => setTimeout(resolve, 500));
             return tx;
         } catch (error: any) {
-            // Handle rate limit errors - try switching provider first
-            if (error?.code === 429 || error?.message?.includes('compute units') || error?.message?.includes('rate limit') || error?.message?.includes('exceeded')) {
+            // Handle rate limit errors and RPC failures - try switching provider first
+            if (error?.code === 429 || error?.message?.includes('compute units') || error?.message?.includes('rate limit') || error?.message?.includes('exceeded') || error?.code === 'CALL_EXCEPTION' || error?.message?.includes('missing revert data')) {
                 const switched = await handleRateLimitError(error);
                 if (switched && attempt < maxRetries - 1) {
                     // Provider switched, retry immediately
@@ -419,7 +481,7 @@ async function sendWithFreshNonceForAgent(
                 }
                 // If switch failed or last attempt, use exponential backoff
                 const backoffDelay = Math.min(2000 * Math.pow(2, attempt), 10000); // Max 10s
-                console.log(`   ⏳ Rate limit hit, waiting ${backoffDelay}ms before retry ${attempt + 1}/${maxRetries}...`);
+                console.log(`   ⏳ Rate limit/RPC error hit, waiting ${backoffDelay}ms before retry ${attempt + 1}/${maxRetries}...`);
                 await new Promise(resolve => setTimeout(resolve, backoffDelay));
                 if (attempt < maxRetries - 1) continue;
             }
@@ -826,11 +888,33 @@ export async function executeSwapOnChain(
             try {
                 console.log(`   🔐 Approving Router for ${agent.personality.name}...`);
                 await sendWithFreshNonceForAgent(agentSigner, async (nonce) => {
-                    return await token.approve(ROUTER_ADDRESS, ethers.MaxUint256, { nonce, ...gasPriceOverride });
+                    try {
+                        return await token.approve(ROUTER_ADDRESS, ethers.MaxUint256, { nonce, ...gasPriceOverride });
+                    } catch (approvalError: any) {
+                        // Handle rate limits during approval
+                        if (approvalError?.code === 429 || approvalError?.message?.includes('rate limit') || approvalError?.message?.includes('exceeded')) {
+                            const switched = await handleRateLimitError(approvalError);
+                            if (switched) {
+                                // Retry with new provider
+                                const prov = getProvider();
+                                const newAgentSigner = getAgentSigner(agent, prov);
+                                const newToken = new ethers.Contract(actualTokenIn, [
+                                    'function approve(address,uint256) returns (bool)',
+                                ], newAgentSigner) as unknown as { approve: (address: string, amount: bigint, overrides?: any) => Promise<any> };
+                                if (!newToken || !newToken.approve) {
+                                    throw new Error('Token contract not initialized');
+                                }
+                                return await newToken.approve(ROUTER_ADDRESS, ethers.MaxUint256, { nonce, ...gasPriceOverride });
+                            }
+                        }
+                        throw approvalError;
+                    }
                 });
                 console.log(`   ✅ Approval confirmed for ${agent.personality.name}`);
             } catch (error: any) {
-                console.error(`❌ Approval failed for ${agent.personality.name}:`, error?.message);
+                const errorMsg = error?.message || error?.reason || error?.code || 'Unknown error';
+                console.error(`❌ Approval failed for ${agent.personality.name}:`, errorMsg);
+                // Don't crash - return failure instead
                 return { success: false };
             }
         } else {
@@ -846,9 +930,9 @@ export async function executeSwapOnChain(
             // Skip validation if it fails - let the swap itself handle the error
             try {
                 const yesTokenAddress = await Promise.race([
-                    router.getYesTokenAddress(proposalId),
-                    new Promise((_, reject) => setTimeout(() => reject(new Error('Validation timeout')), 5000))
-                ]).catch(() => null);
+                    router.getYesTokenAddress(proposalId).catch(() => null),
+                    new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000))
+                ]);
                 
                 if (yesTokenAddress && yesTokenAddress !== ethers.ZeroAddress) {
                     console.log(`   ✅ Proposal ${proposalId} validated`);
@@ -862,6 +946,9 @@ export async function executeSwapOnChain(
             
             const swapTx = await sendWithFreshNonceForAgent(agentSigner, async (nonce) => {
                 try {
+                    if (!agentRouter || !agentRouter.swap) {
+                        throw new Error('Agent router not initialized');
+                    }
                     return await agentRouter.swap(proposalId, actualTokenIn, amountWei, minOutWei, { nonce, ...gasPriceOverride });
                 } catch (swapError: any) {
                     const swapErrorMsg = swapError?.message || swapError?.reason || swapError?.code || 'Unknown error';
@@ -875,6 +962,9 @@ export async function executeSwapOnChain(
                             console.log(`   🔄 Retrying swap with fallback provider...`);
                             const newAgentSigner = getAgentSigner(agent, provider);
                             const newAgentRouter = new ethers.Contract(ROUTER_ADDRESS, routerArtifact.abi, newAgentSigner) as unknown as VerdictRouter;
+                            if (!newAgentRouter || !newAgentRouter.swap) {
+                                throw new Error('Agent router not initialized');
+                            }
                             return await newAgentRouter.swap(proposalId, actualTokenIn, amountWei, minOutWei, { nonce, ...gasPriceOverride });
                         }
                         throw new Error('Rate limit - retry later');
@@ -939,8 +1029,8 @@ export async function getAgentVUSDCBalance(agentAddress: string): Promise<number
 export async function getYesTokenAddress(proposalId: string): Promise<string> {
     try { 
         return await Promise.race([
-            getRouter().getYesTokenAddress(proposalId),
-            new Promise<string>((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000))
+            getRouter().getYesTokenAddress(proposalId).catch(() => ''),
+            new Promise<string>((resolve) => setTimeout(() => resolve(''), 5000))
         ]);
     } catch (error: any) {
         // Silently fail - don't crash on validation errors

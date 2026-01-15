@@ -340,22 +340,10 @@ export async function syncReservesFromChain(marketState: MarketState): Promise<v
     const { getRouter } = await import('../blockchain');
     const router = getRouter();
 
-    // Fetch reserves and proposal status
-    const [reserves, status] = await Promise.all([
-      router.getPoolReserves(strategy.id),
-      router.getProposalStatus(strategy.id)
-    ]);
-
-    // Update resolution status from chain
-    if (status && status.resolved !== undefined) {
-      if (status.resolved && !strategy.resolved) {
-        log('Market', `Sync: Strategy "${strategy.name}" has been resolved on-chain`);
-      }
-      strategy.resolved = status.resolved;
-      if (status.resolved) {
-        strategy.winner = status.isWinner ? 'yes' : 'no';
-      }
-    }
+    // Fetch reserves only - don't sync resolution status from chain
+    // Resolution is determined server-side when round ends
+    // Only graduated proposals (via getGraduatedProposals()) matter for history
+    const reserves = await router.getPoolReserves(strategy.id);
 
     const vUSDC = parseFloat(ethers.formatUnits(reserves.vUSDCReserve, 18));
     const yes = parseFloat(ethers.formatUnits(reserves.yesReserve, 18));

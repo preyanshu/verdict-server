@@ -570,6 +570,8 @@ export async function processTradingRound(
     marketState.roundStartTime = 0;
     marketState.roundEndTime = 0;
     marketState.roundNumber++;
+    // Reset rate limit flag for new round
+    marketState.isLLMRateLimited = false;
     // Set isExecutingTrades to false when round ends
     marketState.isExecutingTrades = false;
     stopTradingLoop(tradingLoopInterval);
@@ -591,8 +593,8 @@ export async function processTradingRound(
   const strategiesForLLM = marketState.strategies.filter(s => !s.resolved);
   const allStrategiesForFallback = marketState.strategies.length > 0 ? marketState.strategies : [];
 
-  if (yesNoAgents.length > 0 && shouldMakeBatchCall && !marketState.isExecutingTradeBatch) {
-    // Try LLM batch call if there are unresolved strategies
+  if (yesNoAgents.length > 0 && shouldMakeBatchCall && !marketState.isExecutingTradeBatch && !marketState.isLLMRateLimited) {
+    // Try LLM batch call if there are unresolved strategies and not rate limited
     if (strategiesForLLM.length > 0) {
       marketState.lastBatchLLMCallTime = currentTime;
       marketState.isMakingBatchLLMCall = true;
@@ -664,9 +666,15 @@ export async function processTradingRound(
           // Reset batch flag on error, but keep isExecutingTrades true (round is still active)
           marketState.isExecutingTradeBatch = false;
         });
-      } catch (error) {
-        // Log error but don't stop trading - market remains active
-        log('Trading', `Batch LLM orchestration error (market remains active): ${error}`, 'error');
+      } catch (error: any) {
+        // Check if this is a rate limit error
+        if (error?.message === 'LLM_RATE_LIMIT' || error?.isRateLimit) {
+          log('Trading', `LLM rate limit detected - skipping LLM calls for rest of round`, 'warn');
+          marketState.isLLMRateLimited = true; // Mark as rate limited for this round
+        } else {
+          // Log other errors but don't stop trading - market remains active
+          log('Trading', `Batch LLM orchestration error (market remains active): ${error}`, 'error');
+        }
         // Continue with fallback strategies for ALL agents when LLM fails
         for (const agent of yesNoAgents) {
           try {
@@ -707,67 +715,75 @@ export async function processTradingRound(
         marketState.isMakingBatchLLMCall = false;
       }
     }
-    
-    // ALWAYS execute fallback strategies for agents that didn't get LLM decisions
-    // This ensures fallback runs even when:
-    // 1. LLM batch call wasn't attempted (no unresolved strategies)
-    // 2. LLM batch call failed (rate limit, etc.)
-    // 3. Round is near completion (strategies resolved)
-    if (yesNoAgents.length > 0 && !marketState.isMakingBatchLLMCall) {
-      // Check which agents need fallback decisions
-      const agentsNeedingFallback = yesNoAgents.filter(agent => {
-        // Agent needs fallback if they don't have a recent decision in roundMemory
-        const recentDecision = agent.roundMemory.find(m => 
-          currentTime - m.timestamp < 10000 // Within last 10 seconds
-        );
-        return !recentDecision;
-      });
+  }
+  
+  // ALWAYS execute fallback strategies for agents that didn't get LLM decisions
+  // This ensures fallback runs even when:
+  // 1. LLM batch call wasn't attempted (no unresolved strategies)
+  // 2. LLM batch call failed (rate limit, etc.)
+  // 3. Round is near completion (strategies resolved)
+  // 4. LLM is rate limited (isLLMRateLimited = true) - CONTINUE with fallback on every iteration
+  if (yesNoAgents.length > 0 && !marketState.isMakingBatchLLMCall && !marketState.isExecutingTradeBatch) {
+    // Check which agents need fallback decisions
+    // When rate limited, always execute fallback (use shorter time window or all agents)
+    const timeWindow = marketState.isLLMRateLimited ? 5000 : 10000; // Shorter window when rate limited
+    const agentsNeedingFallback = yesNoAgents.filter(agent => {
+      // Agent needs fallback if they don't have a recent decision in roundMemory
+      const recentDecision = agent.roundMemory.find(m => 
+        currentTime - m.timestamp < timeWindow
+      );
+      return !recentDecision;
+    });
 
-      if (agentsNeedingFallback.length > 0 && allStrategiesForFallback.length > 0) {
-        log('Trading', `Executing fallback strategies for ${agentsNeedingFallback.length} agents (${allStrategiesForFallback.length} strategies available)`);
-        for (const agent of agentsNeedingFallback) {
-          try {
-            const { executeYesNoStrategyFallback } = await import('./strategies');
-            const { selectStrategyForAgent } = await import('../agents');
-            
-            // Try to get unresolved strategy first
-            let marketStrategy = selectStrategyForAgent(agent, marketState);
-            
-            // If no unresolved strategies (near round end), use all strategies including resolved ones
-            if (!marketStrategy && allStrategiesForFallback.length > 0) {
-              const randomIndex = Math.floor(Math.random() * allStrategiesForFallback.length);
-              marketStrategy = allStrategiesForFallback[randomIndex];
-              log('Trading', `[${agent.personality.name}] No unresolved strategies, using resolved strategy "${marketStrategy.name}" for fallback`, 'debug');
-            }
-            
-            if (marketStrategy) {
-              const fallbackDecision = executeYesNoStrategyFallback(agent, marketState, marketStrategy);
-              agent.roundMemory.push({
-                action: fallbackDecision.action,
-                strategyId: fallbackDecision.strategyId,
-                tokenType: fallbackDecision.tokenType,
-                quantity: fallbackDecision.quantity,
-                price: fallbackDecision.price,
-                reasoning: fallbackDecision.reasoning || 'Using fallback strategy',
-                timestamp: currentTime,
-              });
-              if (agent.roundMemory.length > 100) agent.roundMemory.shift();
-              if (fallbackDecision.action !== 'hold') {
-                marketState.tradeQueue.push({ decision: fallbackDecision, agent });
-              }
-            }
-          } catch (fallbackError) {
-            log('Trading', `Fallback strategy error for ${agent.personality.name}: ${fallbackError}`, 'warn');
+    // When rate limited, always execute fallback for all agents if none need it (to ensure continuous trading)
+    const agentsToProcess = marketState.isLLMRateLimited && agentsNeedingFallback.length === 0 
+      ? yesNoAgents 
+      : agentsNeedingFallback;
+
+    if (agentsToProcess.length > 0 && allStrategiesForFallback.length > 0) {
+      log('Trading', `Executing fallback strategies for ${agentsToProcess.length} agents (${allStrategiesForFallback.length} strategies available)${marketState.isLLMRateLimited ? ' [Rate Limited - using fallback only]' : ''}`);
+      for (const agent of agentsToProcess) {
+        try {
+          const { executeYesNoStrategyFallback } = await import('./strategies');
+          const { selectStrategyForAgent } = await import('../agents');
+          
+          // Try to get unresolved strategy first
+          let marketStrategy = selectStrategyForAgent(agent, marketState);
+          
+          // If no unresolved strategies (near round end), use all strategies including resolved ones
+          if (!marketStrategy && allStrategiesForFallback.length > 0) {
+            const randomIndex = Math.floor(Math.random() * allStrategiesForFallback.length);
+            marketStrategy = allStrategiesForFallback[randomIndex];
+            log('Trading', `[${agent.personality.name}] No unresolved strategies, using resolved strategy "${marketStrategy.name}" for fallback`, 'debug');
           }
+          
+          if (marketStrategy) {
+            const fallbackDecision = executeYesNoStrategyFallback(agent, marketState, marketStrategy);
+            agent.roundMemory.push({
+              action: fallbackDecision.action,
+              strategyId: fallbackDecision.strategyId,
+              tokenType: fallbackDecision.tokenType,
+              quantity: fallbackDecision.quantity,
+              price: fallbackDecision.price,
+              reasoning: fallbackDecision.reasoning || 'Using fallback strategy',
+              timestamp: currentTime,
+            });
+            if (agent.roundMemory.length > 100) agent.roundMemory.shift();
+            if (fallbackDecision.action !== 'hold') {
+              marketState.tradeQueue.push({ decision: fallbackDecision, agent });
+            }
+          }
+        } catch (fallbackError) {
+          log('Trading', `Fallback strategy error for ${agent.personality.name}: ${fallbackError}`, 'warn');
         }
-        
-        // Execute queued trades from fallback decisions
-        if (marketState.tradeQueue.length > 0) {
-          executeQueuedTrades(marketState, agents).catch(err => {
-            log('Trading', `Fallback trade execution queue error: ${err}`, 'error');
-            marketState.isExecutingTradeBatch = false;
-          });
-        }
+      }
+      
+      // Execute queued trades from fallback decisions
+      if (marketState.tradeQueue.length > 0) {
+        executeQueuedTrades(marketState, agents).catch(err => {
+          log('Trading', `Fallback trade execution queue error: ${err}`, 'error');
+          marketState.isExecutingTradeBatch = false;
+        });
       }
     }
   }

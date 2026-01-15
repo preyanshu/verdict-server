@@ -52,6 +52,7 @@ export interface MarketState {
   isExecutingTrades: boolean; // Whether the trading round is active (true for entire round until time expires)
   isExecutingTradeBatch: boolean; // Whether a batch of trades is currently being executed (separate from round status)
   isMakingBatchLLMCall: boolean; // Whether a batch LLM call is currently in progress
+  isLLMRateLimited: boolean; // Whether LLM API is rate limited for this round (skip LLM calls if true)
   // Note: isActive is computed in API responses based on roundEndTime (time-based only, not affected by API failures)
 }
 

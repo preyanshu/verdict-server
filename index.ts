@@ -22,6 +22,25 @@ log('System', 'Establishing blockchain connection layer...');
 initBlockchain().then(async success => {
     if (success) {
         log('System', 'Blockchain connectivity established');
+        
+        // Hydrate in-memory history with on-chain graduated proposals
+        try {
+            const { fetchGraduatedProposalsOnChain } = await import('./src/blockchain');
+            const { syncGraduatedProposals } = await import('./src/core/db');
+            
+            log('System', 'Fetching graduated proposals from blockchain...');
+            const onChainGraduated = await fetchGraduatedProposalsOnChain();
+            
+            if (onChainGraduated.length > 0) {
+                syncGraduatedProposals(onChainGraduated);
+                log('System', `Hydrated ${onChainGraduated.length} graduated proposals from blockchain`);
+            } else {
+                log('System', 'No graduated proposals found on-chain');
+            }
+        } catch (error) {
+            log('System', `Failed to hydrate graduated proposals: ${error}`, 'warn');
+        }
+        
         log('System', 'Ready for proposal generation via /api/admin/init');
     } else {
         log('System', 'Blockchain connectivity failed; entering simulation fallback mode', 'warn');

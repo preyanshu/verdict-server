@@ -574,6 +574,8 @@ export function createServer(
             // Set roundStartTime FIRST to prevent concurrent calls
             marketState.roundStartTime = Date.now();
             marketState.roundEndTime = marketState.roundStartTime + marketState.roundDuration;
+            // Reset rate limit flag for new round
+            marketState.isLLMRateLimited = false;
             // Set isExecutingTrades to true for the entire round duration
             marketState.isExecutingTrades = true;
 

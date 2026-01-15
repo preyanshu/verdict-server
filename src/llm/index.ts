@@ -354,7 +354,15 @@ IMPORTANT RULES:
 
     console.log(`[LLM] Batch complete: ${decisions.size}/${agents.length} decisions generated (one per agent)\n`);
     return decisions;
-  } catch (error) {
+  } catch (error: any) {
+    // Check for rate limit errors and re-throw with a specific marker
+    if (error?.message === 'LLM_RATE_LIMIT' || error?.isRateLimit) {
+      console.error('[LLM] Rate limit detected - will skip LLM calls for rest of round');
+      const rateLimitError = new Error('LLM_RATE_LIMIT');
+      (rateLimitError as any).isRateLimit = true;
+      throw rateLimitError;
+    }
+    // For other errors, log and return empty decisions
     console.error('[LLM] Error calling Groq API:', error);
     if (error instanceof Error) {
       console.error('[LLM] Error message:', error.message);

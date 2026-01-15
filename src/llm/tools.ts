@@ -253,7 +253,21 @@ export async function handleOpenAIToolConversation(
                 console.log('📝 Final Response Length:', finalText.length, 'chars');
                 return finalText;
             }
-        } catch (error) {
+        } catch (error: any) {
+            // Check for rate limit errors
+            if (error?.status === 429 || 
+                error?.code === 429 || 
+                error?.message?.includes('rate limit') || 
+                error?.message?.includes('Rate limit') ||
+                error?.message?.includes('exceeded') ||
+                error?.error?.code === 'rate_limit_exceeded') {
+                console.error('[OpenAI Tool Conversation] Rate limit detected:', error?.message || error?.error?.message);
+                // Throw a specific error that can be caught upstream
+                const rateLimitError = new Error('LLM_RATE_LIMIT');
+                (rateLimitError as any).isRateLimit = true;
+                (rateLimitError as any).originalError = error;
+                throw rateLimitError;
+            }
             console.error('[OpenAI Tool Conversation] Error:', error);
             return null;
         }
