@@ -687,8 +687,10 @@ export async function processTradingRound(
             // If no unresolved strategies (near round end), use all strategies including resolved ones
             if (!marketStrategy && allStrategiesForFallback.length > 0) {
               const randomIndex = Math.floor(Math.random() * allStrategiesForFallback.length);
-              marketStrategy = allStrategiesForFallback[randomIndex];
-              log('Trading', `[${agent.personality.name}] LLM failed, no unresolved strategies, using resolved strategy "${marketStrategy.name}" for fallback`, 'debug');
+              marketStrategy = allStrategiesForFallback[randomIndex] || null;
+              if (marketStrategy) {
+                log('Trading', `[${agent.personality.name}] LLM failed, no unresolved strategies, using resolved strategy "${marketStrategy.name}" for fallback`, 'debug');
+              }
             }
             
             if (marketStrategy) {
@@ -753,8 +755,10 @@ export async function processTradingRound(
           // If no unresolved strategies (near round end), use all strategies including resolved ones
           if (!marketStrategy && allStrategiesForFallback.length > 0) {
             const randomIndex = Math.floor(Math.random() * allStrategiesForFallback.length);
-            marketStrategy = allStrategiesForFallback[randomIndex];
-            log('Trading', `[${agent.personality.name}] No unresolved strategies, using resolved strategy "${marketStrategy.name}" for fallback`, 'debug');
+            marketStrategy = allStrategiesForFallback[randomIndex] || null;
+            if (marketStrategy) {
+              log('Trading', `[${agent.personality.name}] No unresolved strategies, using resolved strategy "${marketStrategy.name}" for fallback`, 'debug');
+            }
           }
           
           if (marketStrategy) {

@@ -1,6 +1,6 @@
 import { ethers } from 'ethers';
 import { config } from '../core/config';
-import routerABI from '../../contracts/abi.json';
+import routerArtifact from '../../abi/router.json';
 
 // Configuration
 const ROUTER_ADDRESS = '0x5FbDB2315678afecb367f032d93F642f64180aa3';
@@ -12,7 +12,7 @@ async function checkMarket() {
     // Connect
     const provider = new ethers.JsonRpcProvider(config.blockchain.rpcUrl || 'http://localhost:8545');
     // Using any for the contract in the script to avoid complex typing for a debug utility
-    const router = new ethers.Contract(ROUTER_ADDRESS, routerABI, provider) as any;
+    const router = new ethers.Contract(ROUTER_ADDRESS, routerArtifact.abi, provider) as any;
 
     // 1. Check Router Connection
     try {

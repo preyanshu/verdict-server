@@ -350,7 +350,15 @@ export function createServer(
             );
           }
 
-          const body = await req.json();
+          const body = await req.json() as {
+            name?: string;
+            description?: string;
+            evaluationLogic?: string;
+            mathematicalLogic?: string;
+            usedDataSources?: any[];
+            resolutionDeadline?: number;
+            initialLiquidity?: number;
+          };
           const { name, description, evaluationLogic, mathematicalLogic, usedDataSources, resolutionDeadline, initialLiquidity } = body;
 
           // Validate required fields

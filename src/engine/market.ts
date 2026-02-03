@@ -54,209 +54,351 @@ export async function generateAndSetStrategies(marketState: MarketState): Promis
     log('Market', 'LLM strategy generation unavailable, initializing default strategies');
     const now = Date.now();
     const MS_PER_DAY = 24 * 60 * 60 * 1000;
-    strategies = [
+
+    // Pool of 25 hardcoded strategies
+    const strategyPool: Array<Omit<MarketStrategy, 'id' | 'timestamp' | 'resolutionDeadline' | 'yesToken' | 'noToken'>> = [
       {
-        id: `strategy-1-${now}`,
         name: 'Tech & Crypto Rally',
-        description: 'This strategy predicts a rally in the tech and crypto markets, with the S&P 500 exceeding 700 and Bitcoin ETF exceeding 50. This prediction matters as it signals a potential shift in investor sentiment towards riskier assets. The current market conditions, with the S&P 500 at 687.725 and Bitcoin ETF at 42.51, suggest a potential uptrend.',
+        description: 'This strategy predicts a rally in the tech and crypto markets, with the S&P 500 exceeding 700 and Bitcoin ETF exceeding 50. This prediction matters as it signals a potential shift in investor sentiment towards riskier assets.',
         evaluationLogic: '(SPY > 700 AND IBIT > 50)',
         mathematicalLogic: 'asset1_price > 700 AND asset2_price > 50',
         usedDataSources: [
-          {
-            id: 12245,
-            currentValue: 687.725,
-            targetValue: 700,
-            operator: '>'
-          },
-          {
-            id: 12251,
-            currentValue: 42.51,
-            targetValue: 50,
-            operator: '>'
-          }
+          { id: 12245, currentValue: 687.725, targetValue: 700, operator: '>' },
+          { id: 12251, currentValue: 42.51, targetValue: 50, operator: '>' }
         ],
-        resolutionDeadline: now + (30 * MS_PER_DAY),
-        yesToken: {
-          tokenReserve: initialTokenReserve,
-          volume: 0,
-          history: [{ price: 0.5, timestamp: now }],
-          twap: 0.5,
-          twapHistory: [{ twap: 0.5, timestamp: now }],
-        },
-        noToken: {
-          tokenReserve: initialTokenReserve,
-          volume: 0,
-          history: [{ price: 0.5, timestamp: now }],
-          twap: 0.5,
-          twapHistory: [{ twap: 0.5, timestamp: now }],
-        },
-        timestamp: now,
         resolved: false,
         winner: null,
       },
       {
-        id: `strategy-2-${now}`,
         name: 'Energy Sector Downturn',
-        description: 'This strategy predicts a downturn in the energy sector, with WTI oil dropping below 60 and natural gas dropping below 3. This prediction matters as it signals a potential shift in investor sentiment towards safer assets. The current market conditions, with WTI oil at 62.91871 and natural gas at 3.34076, suggest a potential downtrend.',
+        description: 'This strategy predicts a downturn in the energy sector, with WTI oil dropping below 60 and natural gas dropping below 3. This prediction matters as it signals a potential shift in investor sentiment towards safer assets.',
         evaluationLogic: '(WTI < 60 AND NG < 3)',
         mathematicalLogic: 'asset1_price < 60 AND asset2_price < 3',
         usedDataSources: [
-          {
-            id: 12288,
-            currentValue: 62.91871,
-            targetValue: 60,
-            operator: '<'
-          },
-          {
-            id: 12292,
-            currentValue: 3.34076,
-            targetValue: 3,
-            operator: '<'
-          }
+          { id: 12288, currentValue: 62.91871, targetValue: 60, operator: '<' },
+          { id: 12292, currentValue: 3.34076, targetValue: 3, operator: '<' }
         ],
-        resolutionDeadline: now + (14 * MS_PER_DAY),
-        yesToken: {
-          tokenReserve: initialTokenReserve,
-          volume: 0,
-          history: [{ price: 0.5, timestamp: now }],
-          twap: 0.5,
-          twapHistory: [{ twap: 0.5, timestamp: now }],
-        },
-        noToken: {
-          tokenReserve: initialTokenReserve,
-          volume: 0,
-          history: [{ price: 0.5, timestamp: now }],
-          twap: 0.5,
-          twapHistory: [{ twap: 0.5, timestamp: now }],
-        },
-        timestamp: now,
         resolved: false,
         winner: null,
       },
       {
-        id: `strategy-3-${now}`,
         name: 'Broad Market Growth',
-        description: 'This strategy predicts broad market growth, with the S&P 500 exceeding 700, the QQQ exceeding 550, and the VTI exceeding 300. This prediction matters as it signals a potential shift in investor sentiment towards riskier assets. The current market conditions, with the S&P 500 at 687.725, the QQQ at 615.32, and the VTI at 338.87, suggest a potential uptrend.',
+        description: 'This strategy predicts broad market growth, with the S&P 500 exceeding 700, the QQQ exceeding 550, and the VTI exceeding 300. This prediction matters as it signals a potential shift in investor sentiment towards riskier assets.',
         evaluationLogic: '(SPY > 700 AND QQQ > 550 AND VTI > 300)',
         mathematicalLogic: 'asset1_price > 700 AND asset2_price > 550 AND asset3_price > 300',
         usedDataSources: [
-          {
-            id: 12245,
-            currentValue: 687.725,
-            targetValue: 700,
-            operator: '>'
-          },
-          {
-            id: 12249,
-            currentValue: 615.32,
-            targetValue: 550,
-            operator: '>'
-          },
-          {
-            id: 12247,
-            currentValue: 338.87,
-            targetValue: 300,
-            operator: '>'
-          }
+          { id: 12245, currentValue: 687.725, targetValue: 700, operator: '>' },
+          { id: 12249, currentValue: 615.32, targetValue: 550, operator: '>' },
+          { id: 12247, currentValue: 338.87, targetValue: 300, operator: '>' }
         ],
-        resolutionDeadline: now + (60 * MS_PER_DAY),
-        yesToken: {
-          tokenReserve: initialTokenReserve,
-          volume: 0,
-          history: [{ price: 0.5, timestamp: now }],
-          twap: 0.5,
-          twapHistory: [{ twap: 0.5, timestamp: now }],
-        },
-        noToken: {
-          tokenReserve: initialTokenReserve,
-          volume: 0,
-          history: [{ price: 0.5, timestamp: now }],
-          twap: 0.5,
-          twapHistory: [{ twap: 0.5, timestamp: now }],
-        },
-        timestamp: now,
         resolved: false,
         winner: null,
       },
       {
-        id: `strategy-4-${now}`,
         name: 'Market Divergence',
-        description: 'This strategy predicts market divergence, with either the QQQ exceeding 550 or the TLT exceeding 95. This prediction matters as it signals a potential shift in investor sentiment towards safer assets. The current market conditions, with the QQQ at 615.32 and the TLT at 86.46, suggest a potential uptrend.',
+        description: 'This strategy predicts market divergence, with either the QQQ exceeding 550 or the TLT exceeding 95. This prediction matters as it signals a potential shift in investor sentiment towards safer assets.',
         evaluationLogic: '(QQQ > 550 OR TLT > 95)',
         mathematicalLogic: 'asset1_price > 550 OR asset2_price > 95',
         usedDataSources: [
-          {
-            id: 12249,
-            currentValue: 615.32,
-            targetValue: 550,
-            operator: '>'
-          },
-          {
-            id: 12276,
-            currentValue: 86.46,
-            targetValue: 95,
-            operator: '>'
-          }
+          { id: 12249, currentValue: 615.32, targetValue: 550, operator: '>' },
+          { id: 12276, currentValue: 86.46, targetValue: 95, operator: '>' }
         ],
-        resolutionDeadline: now + (7 * MS_PER_DAY),
-        yesToken: {
-          tokenReserve: initialTokenReserve,
-          volume: 0,
-          history: [{ price: 0.5, timestamp: now }],
-          twap: 0.5,
-          twapHistory: [{ twap: 0.5, timestamp: now }],
-        },
-        noToken: {
-          tokenReserve: initialTokenReserve,
-          volume: 0,
-          history: [{ price: 0.5, timestamp: now }],
-          twap: 0.5,
-          twapHistory: [{ twap: 0.5, timestamp: now }],
-        },
-        timestamp: now,
         resolved: false,
         winner: null,
       },
       {
-        id: `strategy-5-${now}`,
         name: 'Currency Fluctuation',
-        description: 'This strategy predicts a fluctuation in the currency markets, with the Canadian dollar exceeding 0.735 and the Australian dollar exceeding 0.705. This prediction matters as it signals a potential shift in investor sentiment towards safer assets. The current market conditions, with the Canadian dollar at 0.7328154770628755 and the Australian dollar at 0.7011098569034783, suggest a potential uptrend.',
+        description: 'This strategy predicts a fluctuation in the currency markets, with the Canadian dollar exceeding 0.735 and the Australian dollar exceeding 0.705. This prediction matters as it signals a potential shift in investor sentiment towards safer assets.',
         evaluationLogic: '(CAD > 0.735 AND AUD > 0.705)',
         mathematicalLogic: 'asset1_price > 0.735 AND asset2_price > 0.705',
         usedDataSources: [
-          {
-            id: 12283,
-            currentValue: 0.7328154770628755,
-            targetValue: 0.735,
-            operator: '>'
-          },
-          {
-            id: 12281,
-            currentValue: 0.7011098569034783,
-            targetValue: 0.705,
-            operator: '>'
-          }
+          { id: 12283, currentValue: 0.7328154770628755, targetValue: 0.735, operator: '>' },
+          { id: 12281, currentValue: 0.7011098569034783, targetValue: 0.705, operator: '>' }
         ],
-        resolutionDeadline: now + (2 * MS_PER_DAY),
-        yesToken: {
-          tokenReserve: initialTokenReserve,
-          volume: 0,
-          history: [{ price: 0.5, timestamp: now }],
-          twap: 0.5,
-          twapHistory: [{ twap: 0.5, timestamp: now }],
-        },
-        noToken: {
-          tokenReserve: initialTokenReserve,
-          volume: 0,
-          history: [{ price: 0.5, timestamp: now }],
-          twap: 0.5,
-          twapHistory: [{ twap: 0.5, timestamp: now }],
-        },
-        timestamp: now,
+        resolved: false,
+        winner: null,
+      },
+      {
+        name: 'S&P 500 Growth Strategy',
+        description: 'This strategy predicts that the S&P 500 ETF Trust will exceed $700 in the next 30 days, indicating a strong market growth. The success of this strategy depends on the ability of the S&P 500 to maintain its current growth trend.',
+        evaluationLogic: '(SPY > 700)',
+        mathematicalLogic: 'asset_price > 700',
+        usedDataSources: [
+          { id: 12245, currentValue: 688.1, targetValue: 700, operator: '>' }
+        ],
+        resolved: false,
+        winner: null,
+      },
+      {
+        name: 'Commodity Price Drop Strategy',
+        description: 'This strategy predicts that the price of WTI crude oil will drop below $60 in the next 7 days, indicating a decrease in global demand. The success of this strategy depends on the ability of the global economy to reduce its reliance on fossil fuels.',
+        evaluationLogic: '(WTI < 60)',
+        mathematicalLogic: 'asset_price < 60',
+        usedDataSources: [
+          { id: 12288, currentValue: 63.19666, targetValue: 60, operator: '<' }
+        ],
+        resolved: false,
+        winner: null,
+      },
+      {
+        name: 'Treasury Bond Yield Strategy',
+        description: 'This strategy predicts that the price of the 20+ Year Treasury Bond ETF will exceed $90 in the next 60 days, indicating a decrease in interest rates. The success of this strategy depends on the ability of the Federal Reserve to maintain its current monetary policy.',
+        evaluationLogic: '(TLT > 90)',
+        mathematicalLogic: 'asset_price > 90',
+        usedDataSources: [
+          { id: 12276, currentValue: 86.465, targetValue: 90, operator: '>' }
+        ],
+        resolved: false,
+        winner: null,
+      },
+      {
+        name: 'Bitcoin Price Surge Strategy',
+        description: 'This strategy predicts that the price of the Bitcoin Trust will exceed $50 in the next 14 days, indicating a significant increase in demand for cryptocurrencies. The success of this strategy depends on the ability of Bitcoin to regain its momentum.',
+        evaluationLogic: '(IBIT > 50)',
+        mathematicalLogic: 'asset_price > 50',
+        usedDataSources: [
+          { id: 12251, currentValue: 42.505, targetValue: 50, operator: '>' }
+        ],
+        resolved: false,
+        winner: null,
+      },
+      {
+        name: 'Vanguard S&P 500 ETF Growth Strategy',
+        description: 'This strategy predicts that the price of the Vanguard S&P 500 ETF will exceed $650 in the next 45 days, indicating a strong market growth. The success of this strategy depends on the ability of the S&P 500 to maintain its current growth trend.',
+        evaluationLogic: '(VOO > 650)',
+        mathematicalLogic: 'asset_price > 650',
+        usedDataSources: [
+          { id: 12243, currentValue: 632.95, targetValue: 650, operator: '>' }
+        ],
+        resolved: false,
+        winner: null,
+      },
+      {
+        name: 'Nasdaq Tech Momentum',
+        description: 'This strategy predicts that the Nasdaq QQQ Trust will exceed $600, indicating strong tech sector momentum. The current market conditions suggest a potential uptrend in technology stocks.',
+        evaluationLogic: '(QQQ > 600)',
+        mathematicalLogic: 'asset_price > 600',
+        usedDataSources: [
+          { id: 12249, currentValue: 615.32, targetValue: 600, operator: '>' }
+        ],
+        resolved: false,
+        winner: null,
+      },
+      {
+        name: 'Total Stock Market Growth',
+        description: 'This strategy predicts that the Vanguard Total Stock Market ETF will exceed $350, indicating broad market strength across all sectors.',
+        evaluationLogic: '(VTI > 350)',
+        mathematicalLogic: 'asset_price > 350',
+        usedDataSources: [
+          { id: 12247, currentValue: 338.87, targetValue: 350, operator: '>' }
+        ],
+        resolved: false,
+        winner: null,
+      },
+      {
+        name: 'Ethereum ETF Rally',
+        description: 'This strategy predicts that the Ethereum ETF will exceed $45, indicating growing institutional interest in Ethereum alongside Bitcoin.',
+        evaluationLogic: '(ETH > 45)',
+        mathematicalLogic: 'asset_price > 45',
+        usedDataSources: [
+          { id: 12252, currentValue: 42.0, targetValue: 45, operator: '>' }
+        ],
+        resolved: false,
+        winner: null,
+      },
+      {
+        name: 'Oil Price Recovery',
+        description: 'This strategy predicts that WTI crude oil will exceed $70, indicating a recovery in energy demand and global economic activity.',
+        evaluationLogic: '(WTI > 70)',
+        mathematicalLogic: 'asset_price > 70',
+        usedDataSources: [
+          { id: 12288, currentValue: 62.91871, targetValue: 70, operator: '>' }
+        ],
+        resolved: false,
+        winner: null,
+      },
+      {
+        name: 'Natural Gas Surge',
+        description: 'This strategy predicts that natural gas will exceed $4, indicating increased demand for energy commodities.',
+        evaluationLogic: '(NG > 4)',
+        mathematicalLogic: 'asset_price > 4',
+        usedDataSources: [
+          { id: 12292, currentValue: 3.34076, targetValue: 4, operator: '>' }
+        ],
+        resolved: false,
+        winner: null,
+      },
+      {
+        name: 'Tech & Bond Correlation',
+        description: 'This strategy predicts that both tech stocks (QQQ) and bonds (TLT) will rise, indicating a risk-on environment with low volatility.',
+        evaluationLogic: '(QQQ > 600 AND TLT > 90)',
+        mathematicalLogic: 'asset1_price > 600 AND asset2_price > 90',
+        usedDataSources: [
+          { id: 12249, currentValue: 615.32, targetValue: 600, operator: '>' },
+          { id: 12276, currentValue: 86.46, targetValue: 90, operator: '>' }
+        ],
+        resolved: false,
+        winner: null,
+      },
+      {
+        name: 'Crypto Dual Rally',
+        description: 'This strategy predicts that both Bitcoin and Ethereum ETFs will surge, indicating broad crypto market strength.',
+        evaluationLogic: '(IBIT > 50 AND ETH > 45)',
+        mathematicalLogic: 'asset1_price > 50 AND asset2_price > 45',
+        usedDataSources: [
+          { id: 12251, currentValue: 42.51, targetValue: 50, operator: '>' },
+          { id: 12252, currentValue: 42.0, targetValue: 45, operator: '>' }
+        ],
+        resolved: false,
+        winner: null,
+      },
+      {
+        name: 'Energy Sector Recovery',
+        description: 'This strategy predicts that both oil and natural gas will rise, indicating a strong recovery in the energy sector.',
+        evaluationLogic: '(WTI > 70 AND NG > 4)',
+        mathematicalLogic: 'asset1_price > 70 AND asset2_price > 4',
+        usedDataSources: [
+          { id: 12288, currentValue: 62.91871, targetValue: 70, operator: '>' },
+          { id: 12292, currentValue: 3.34076, targetValue: 4, operator: '>' }
+        ],
+        resolved: false,
+        winner: null,
+      },
+      {
+        name: 'Market Breadth Expansion',
+        description: 'This strategy predicts that multiple indices will rise together, indicating broad market participation and healthy market conditions.',
+        evaluationLogic: '(SPY > 700 AND VOO > 650 AND VTI > 350)',
+        mathematicalLogic: 'asset1_price > 700 AND asset2_price > 650 AND asset3_price > 350',
+        usedDataSources: [
+          { id: 12245, currentValue: 687.725, targetValue: 700, operator: '>' },
+          { id: 12243, currentValue: 632.95, targetValue: 650, operator: '>' },
+          { id: 12247, currentValue: 338.87, targetValue: 350, operator: '>' }
+        ],
+        resolved: false,
+        winner: null,
+      },
+      {
+        name: 'Risk-On Environment',
+        description: 'This strategy predicts that either tech stocks or crypto will surge, indicating investor appetite for riskier assets.',
+        evaluationLogic: '(QQQ > 600 OR IBIT > 50)',
+        mathematicalLogic: 'asset1_price > 600 OR asset2_price > 50',
+        usedDataSources: [
+          { id: 12249, currentValue: 615.32, targetValue: 600, operator: '>' },
+          { id: 12251, currentValue: 42.51, targetValue: 50, operator: '>' }
+        ],
+        resolved: false,
+        winner: null,
+      },
+      {
+        name: 'Flight to Safety',
+        description: 'This strategy predicts that bonds will rise while stocks decline, indicating a flight to safety scenario.',
+        evaluationLogic: '(TLT > 90 OR SPY < 650)',
+        mathematicalLogic: 'asset1_price > 90 OR asset2_price < 650',
+        usedDataSources: [
+          { id: 12276, currentValue: 86.46, targetValue: 90, operator: '>' },
+          { id: 12245, currentValue: 687.725, targetValue: 650, operator: '<' }
+        ],
+        resolved: false,
+        winner: null,
+      },
+      {
+        name: 'Commodity Inflation Hedge',
+        description: 'This strategy predicts that both oil and natural gas will rise, indicating inflationary pressures in energy markets.',
+        evaluationLogic: '(WTI > 65 AND NG > 3.5)',
+        mathematicalLogic: 'asset1_price > 65 AND asset2_price > 3.5',
+        usedDataSources: [
+          { id: 12288, currentValue: 62.91871, targetValue: 65, operator: '>' },
+          { id: 12292, currentValue: 3.34076, targetValue: 3.5, operator: '>' }
+        ],
+        resolved: false,
+        winner: null,
+      },
+      {
+        name: 'Currency Strength',
+        description: 'This strategy predicts that both Canadian and Australian dollars will strengthen against USD, indicating commodity-driven currency strength.',
+        evaluationLogic: '(CAD > 0.74 AND AUD > 0.71)',
+        mathematicalLogic: 'asset1_price > 0.74 AND asset2_price > 0.71',
+        usedDataSources: [
+          { id: 12283, currentValue: 0.7328154770628755, targetValue: 0.74, operator: '>' },
+          { id: 12281, currentValue: 0.7011098569034783, targetValue: 0.71, operator: '>' }
+        ],
+        resolved: false,
+        winner: null,
+      },
+      {
+        name: 'Multi-Asset Bull Run',
+        description: 'This strategy predicts simultaneous growth across stocks, crypto, and bonds, indicating an extremely bullish market environment.',
+        evaluationLogic: '(SPY > 700 AND IBIT > 50 AND TLT > 88)',
+        mathematicalLogic: 'asset1_price > 700 AND asset2_price > 50 AND asset3_price > 88',
+        usedDataSources: [
+          { id: 12245, currentValue: 687.725, targetValue: 700, operator: '>' },
+          { id: 12251, currentValue: 42.51, targetValue: 50, operator: '>' },
+          { id: 12276, currentValue: 86.46, targetValue: 88, operator: '>' }
+        ],
+        resolved: false,
+        winner: null,
+      },
+      {
+        name: 'Tech Sector Dominance',
+        description: 'This strategy predicts that tech-heavy indices will outperform, indicating sector rotation towards technology.',
+        evaluationLogic: '(QQQ > 620 AND VTI > 340)',
+        mathematicalLogic: 'asset1_price > 620 AND asset2_price > 340',
+        usedDataSources: [
+          { id: 12249, currentValue: 615.32, targetValue: 620, operator: '>' },
+          { id: 12247, currentValue: 338.87, targetValue: 340, operator: '>' }
+        ],
         resolved: false,
         winner: null,
       },
     ];
+
+    // Randomly select 5 strategies from the pool
+    const selectedIndices: number[] = [];
+    while (selectedIndices.length < 5) {
+      const randomIndex = Math.floor(Math.random() * strategyPool.length);
+      if (!selectedIndices.includes(randomIndex)) {
+        selectedIndices.push(randomIndex);
+      }
+    }
+
+    // Create strategies with timestamps and deadlines
+    const timeLimits = [2, 7, 14, 30, 45, 60]; // Days
+    strategies = selectedIndices.map((index, i) => {
+      const template = strategyPool[index];
+      if (!template) {
+        throw new Error(`Strategy template at index ${index} not found`);
+      }
+      const timeLimitDays = timeLimits[i % timeLimits.length] || 30;
+      
+      return {
+        id: `strategy-${i + 1}-${now}`,
+        name: template.name,
+        description: template.description,
+        evaluationLogic: template.evaluationLogic,
+        mathematicalLogic: template.mathematicalLogic,
+        usedDataSources: template.usedDataSources,
+        resolutionDeadline: now + (timeLimitDays * MS_PER_DAY),
+        yesToken: {
+          tokenReserve: initialTokenReserve,
+          volume: 0,
+          history: [{ price: 0.5, timestamp: now }],
+          twap: 0.5,
+          twapHistory: [{ twap: 0.5, timestamp: now }],
+        },
+        noToken: {
+          tokenReserve: initialTokenReserve,
+          volume: 0,
+          history: [{ price: 0.5, timestamp: now }],
+          twap: 0.5,
+          twapHistory: [{ twap: 0.5, timestamp: now }],
+        },
+        timestamp: now,
+        resolved: false,
+        winner: null,
+      };
+    });
+
+    log('Market', `Selected ${strategies.length} strategies from pool of ${strategyPool.length}`);
   }
 
   // Register proposals on-chain FIRST (before adding to memory)

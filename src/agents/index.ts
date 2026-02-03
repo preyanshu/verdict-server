@@ -96,7 +96,8 @@ export function selectStrategyForAgent(agent: Agent, market: MarketState): Marke
 
   // Randomly select a strategy (ensures all proposals get trading activity)
   const randomIndex = Math.floor(Math.random() * availableStrategies.length);
-  return availableStrategies[randomIndex];
+  const selected = availableStrategies[randomIndex];
+  return selected || null;
 }
 
 /**

@@ -701,30 +701,54 @@ CRITICAL RULES:
 - AT LEAST 3 strategies MUST use 2+ data sources with AND/OR logic.
 - The "usedDataSources" array MUST contain ALL data sources referenced in the evaluation logic.`;
 
-  try {
-    const systemPrompt = 'You are an expert RWA strategy generator. You create complex, verifiable market strategies based on real-time data sources with specific time horizons. Respond only with valid JSON array.';
-    const fullPrompt = `${systemPrompt}\n\n${prompt}`;
+  const systemPrompt = 'You are an expert RWA strategy generator. You create complex, verifiable market strategies based on real-time data sources with specific time horizons. Respond only with valid JSON array.';
+  const fullPrompt = `${systemPrompt}\n\n${prompt}`;
 
+  let content: string | null = null;
+
+  // First, try with tools enabled
+  try {
     console.log(`[LLM] Calling Groq via OpenAI SDK with tool access for ${nowFormatted}...`);
 
     // Use OpenAI SDK with Groq's OpenAI-compatible endpoint for proper tool support
-    const content = await handleOpenAIToolConversation(
+    content = await handleOpenAIToolConversation(
       fullPrompt,
       [], // No agents yet during initialization
       { strategies: [] } as any, // Dummy market state
       3 // Max 3 tool calls (reduced to avoid rate limits)
     );
 
-    console.log(`[LLM] Received response from Groq`);
+    console.log(`[LLM] Received response from Groq (with tools)`);
+  } catch (toolError) {
+    console.error('[LLM] ⚠️ Tool-enabled call failed:', toolError);
+    content = null;
+  }
 
-    if (!content) {
-      console.error('[LLM] ❌ Groq API returned no content');
+  // If tools failed or returned no content, retry WITHOUT tools
+  if (!content) {
+    try {
+      console.log(`[LLM] 🔄 Retrying without tools...`);
+      
+      // Use simple completion without tools as fallback
+      content = await simpleGroqCompletion(fullPrompt);
+      
+      console.log(`[LLM] Received response from Groq (without tools)`);
+    } catch (fallbackError) {
+      console.error('[LLM] ❌ Fallback (no tools) also failed:', fallbackError);
       return [];
     }
+  }
 
+  if (!content) {
+    console.error('[LLM] ❌ Groq API returned no content after both attempts');
+    return [];
+  }
+
+  try {
     const jsonMatch = content.match(/\[[\s\S]*\]/);
     if (!jsonMatch) {
       console.error('[LLM] LLM response does not contain valid JSON array');
+      console.error(`[LLM] Response was: ${content.substring(0, 500)}...`);
       return [];
     }
 
@@ -771,7 +795,7 @@ CRITICAL RULES:
     console.log(`[LLM] Generated ${strategies.length} verified RWA strategies with deadlines\n`);
     return strategies;
   } catch (error) {
-    console.error('[LLM] Error calling Groq API for RWA strategy generation:', error);
+    console.error('[LLM] Error parsing strategy response:', error);
     return [];
   }
 }
