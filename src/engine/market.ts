@@ -57,15 +57,21 @@ export async function generateAndSetStrategies(marketState: MarketState): Promis
     strategies = [
       {
         id: `strategy-1-${now}`,
-        name: 'S&P 500 Index Growth',
-        description: 'S&P 500 price exceeds $700',
-        evaluationLogic: 'SPY > 700',
-        mathematicalLogic: 'price > 700',
+        name: 'Tech & Crypto Rally',
+        description: 'This strategy predicts a rally in the tech and crypto markets, with the S&P 500 exceeding 700 and Bitcoin ETF exceeding 50. This prediction matters as it signals a potential shift in investor sentiment towards riskier assets. The current market conditions, with the S&P 500 at 687.725 and Bitcoin ETF at 42.51, suggest a potential uptrend.',
+        evaluationLogic: '(SPY > 700 AND IBIT > 50)',
+        mathematicalLogic: 'asset1_price > 700 AND asset2_price > 50',
         usedDataSources: [
           {
             id: 12245,
-            currentValue: 693.99,
+            currentValue: 687.725,
             targetValue: 700,
+            operator: '>'
+          },
+          {
+            id: 12251,
+            currentValue: 42.51,
+            targetValue: 50,
             operator: '>'
           }
         ],
@@ -90,19 +96,25 @@ export async function generateAndSetStrategies(marketState: MarketState): Promis
       },
       {
         id: `strategy-2-${now}`,
-        name: 'Oil Price Surge',
-        description: 'Crude Oil (WTI) price exceeds $70',
-        evaluationLogic: 'WTI > 70',
-        mathematicalLogic: 'price > 70',
+        name: 'Energy Sector Downturn',
+        description: 'This strategy predicts a downturn in the energy sector, with WTI oil dropping below 60 and natural gas dropping below 3. This prediction matters as it signals a potential shift in investor sentiment towards safer assets. The current market conditions, with WTI oil at 62.91871 and natural gas at 3.34076, suggest a potential downtrend.',
+        evaluationLogic: '(WTI < 60 AND NG < 3)',
+        mathematicalLogic: 'asset1_price < 60 AND asset2_price < 3',
         usedDataSources: [
           {
             id: 12288,
-            currentValue: 58.78,
-            targetValue: 70,
-            operator: '>'
+            currentValue: 62.91871,
+            targetValue: 60,
+            operator: '<'
+          },
+          {
+            id: 12292,
+            currentValue: 3.34076,
+            targetValue: 3,
+            operator: '<'
           }
         ],
-        resolutionDeadline: now + (15 * MS_PER_DAY),
+        resolutionDeadline: now + (14 * MS_PER_DAY),
         yesToken: {
           tokenReserve: initialTokenReserve,
           volume: 0,
@@ -123,16 +135,67 @@ export async function generateAndSetStrategies(marketState: MarketState): Promis
       },
       {
         id: `strategy-3-${now}`,
-        name: 'Bitcoin ETF Stability',
-        description: 'iShares Bitcoin Trust (IBIT) stays above $50',
-        evaluationLogic: 'IBIT >= 50',
-        mathematicalLogic: 'price >= 50',
+        name: 'Broad Market Growth',
+        description: 'This strategy predicts broad market growth, with the S&P 500 exceeding 700, the QQQ exceeding 550, and the VTI exceeding 300. This prediction matters as it signals a potential shift in investor sentiment towards riskier assets. The current market conditions, with the S&P 500 at 687.725, the QQQ at 615.32, and the VTI at 338.87, suggest a potential uptrend.',
+        evaluationLogic: '(SPY > 700 AND QQQ > 550 AND VTI > 300)',
+        mathematicalLogic: 'asset1_price > 700 AND asset2_price > 550 AND asset3_price > 300',
         usedDataSources: [
           {
-            id: 12251,
-            currentValue: 51.17,
-            targetValue: 50,
-            operator: '>='
+            id: 12245,
+            currentValue: 687.725,
+            targetValue: 700,
+            operator: '>'
+          },
+          {
+            id: 12249,
+            currentValue: 615.32,
+            targetValue: 550,
+            operator: '>'
+          },
+          {
+            id: 12247,
+            currentValue: 338.87,
+            targetValue: 300,
+            operator: '>'
+          }
+        ],
+        resolutionDeadline: now + (60 * MS_PER_DAY),
+        yesToken: {
+          tokenReserve: initialTokenReserve,
+          volume: 0,
+          history: [{ price: 0.5, timestamp: now }],
+          twap: 0.5,
+          twapHistory: [{ twap: 0.5, timestamp: now }],
+        },
+        noToken: {
+          tokenReserve: initialTokenReserve,
+          volume: 0,
+          history: [{ price: 0.5, timestamp: now }],
+          twap: 0.5,
+          twapHistory: [{ twap: 0.5, timestamp: now }],
+        },
+        timestamp: now,
+        resolved: false,
+        winner: null,
+      },
+      {
+        id: `strategy-4-${now}`,
+        name: 'Market Divergence',
+        description: 'This strategy predicts market divergence, with either the QQQ exceeding 550 or the TLT exceeding 95. This prediction matters as it signals a potential shift in investor sentiment towards safer assets. The current market conditions, with the QQQ at 615.32 and the TLT at 86.46, suggest a potential uptrend.',
+        evaluationLogic: '(QQQ > 550 OR TLT > 95)',
+        mathematicalLogic: 'asset1_price > 550 OR asset2_price > 95',
+        usedDataSources: [
+          {
+            id: 12249,
+            currentValue: 615.32,
+            targetValue: 550,
+            operator: '>'
+          },
+          {
+            id: 12276,
+            currentValue: 86.46,
+            targetValue: 95,
+            operator: '>'
           }
         ],
         resolutionDeadline: now + (7 * MS_PER_DAY),
@@ -155,53 +218,26 @@ export async function generateAndSetStrategies(marketState: MarketState): Promis
         winner: null,
       },
       {
-        id: `strategy-4-${now}`,
-        name: 'Nasdaq Momentum',
-        description: 'QQQ Trust Invesco exceeds $650',
-        evaluationLogic: 'QQQ > 650',
-        mathematicalLogic: 'price > 650',
-        usedDataSources: [
-          {
-            id: 12249,
-            currentValue: 626.66,
-            targetValue: 650,
-            operator: '>'
-          }
-        ],
-        resolutionDeadline: now + (30 * MS_PER_DAY),
-        yesToken: {
-          tokenReserve: initialTokenReserve,
-          volume: 0,
-          history: [{ price: 0.5, timestamp: now }],
-          twap: 0.5,
-          twapHistory: [{ twap: 0.5, timestamp: now }],
-        },
-        noToken: {
-          tokenReserve: initialTokenReserve,
-          volume: 0,
-          history: [{ price: 0.5, timestamp: now }],
-          twap: 0.5,
-          twapHistory: [{ twap: 0.5, timestamp: now }],
-        },
-        timestamp: now,
-        resolved: false,
-        winner: null,
-      },
-      {
         id: `strategy-5-${now}`,
-        name: 'Natural Gas Recovery',
-        description: 'Natural Gas (NG) price stays above $3',
-        evaluationLogic: 'NG > 3.0',
-        mathematicalLogic: 'price > 3.0',
+        name: 'Currency Fluctuation',
+        description: 'This strategy predicts a fluctuation in the currency markets, with the Canadian dollar exceeding 0.735 and the Australian dollar exceeding 0.705. This prediction matters as it signals a potential shift in investor sentiment towards safer assets. The current market conditions, with the Canadian dollar at 0.7328154770628755 and the Australian dollar at 0.7011098569034783, suggest a potential uptrend.',
+        evaluationLogic: '(CAD > 0.735 AND AUD > 0.705)',
+        mathematicalLogic: 'asset1_price > 0.735 AND asset2_price > 0.705',
         usedDataSources: [
           {
-            id: 12292,
-            currentValue: 3.17,
-            targetValue: 3.0,
+            id: 12283,
+            currentValue: 0.7328154770628755,
+            targetValue: 0.735,
+            operator: '>'
+          },
+          {
+            id: 12281,
+            currentValue: 0.7011098569034783,
+            targetValue: 0.705,
             operator: '>'
           }
         ],
-        resolutionDeadline: now + (10 * MS_PER_DAY),
+        resolutionDeadline: now + (2 * MS_PER_DAY),
         yesToken: {
           tokenReserve: initialTokenReserve,
           volume: 0,

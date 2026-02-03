@@ -626,8 +626,8 @@ Each strategy must:
 1. Be verifiable against the provided trusted data sources using clear logic.
 2. Have a specific prediction (YES/NO outcome) based on real-world asset values.
 3. Include a time horizon / limit (e.g., "in 3 days", "in 7 days", "in 30 days").
-4. Define complex "Evaluation Logic" using AND/OR conjunctions (e.g., "(SPY > 700 AND QQQ > 500)" or "WTI < 60").
-5. Specify the "Mathematical Logic" for automated verification (e.g., "targetValue > 700").
+4. Define complex "Evaluation Logic" using AND/OR conjunctions (e.g., "(SPY > 700 AND QQQ > 500)" or "(WTI < 60 OR NG > 4)").
+5. Specify the "Mathematical Logic" for automated verification (e.g., "asset1_price > 700 AND asset2_price > 500").
 6. Provide the exact "Verification API" call based on the data source endpoints.
 7. Explicitly state the success criteria.
 
@@ -650,10 +650,24 @@ Total: ${totalDataSources} data sources available.
   * Explain the significance of the prediction
   * Use professional financial language
   * Be specific about what will be measured and why
-- Evaluation Logic: Human-readable logic for frontend (e.g. "(SPY > 700 OR QQQ > 550)").
+- Evaluation Logic: Human-readable logic for frontend (e.g. "(SPY > 700 AND QQQ > 550)" or "(BTC > 100000 OR ETH > 5000)").
 - Mathematical Logic: Pure machine-readable logic for automated check.
 - Verification Source: The specific "ID" of the data source used for verification (from the list above).
 - IMPORTANT: You MUST call 'get_dia_prices' with relevant tickers to verify current values before generating strategies.
+
+=== MULTI-DATA SOURCE STRATEGIES (REQUIRED) ===
+IMPORTANT: At least 3 out of ${count} strategies MUST use MULTIPLE data sources (2-3 assets) combined with AND/OR logic.
+
+Examples of multi-data source strategies:
+1. "Tech & Crypto Rally": (SPY > 700 AND IBIT > 50) - Both S&P 500 and Bitcoin ETF must exceed targets
+2. "Energy Sector Downturn": (WTI < 60 AND NG < 3) - Both oil and natural gas must drop below thresholds
+3. "Market Divergence": (QQQ > 550 OR TLT > 95) - Either Nasdaq rises OR bonds rise (flight to safety scenario)
+4. "Broad Market Growth": (VOO > 650 AND VTI > 300 AND SPY > 700) - All major indices must exceed targets
+
+When using multiple data sources:
+- Include ALL data sources in the "usedDataSources" array
+- Evaluation logic should clearly show the relationship (AND/OR)
+- Mathematical logic should match the evaluation logic structure
 
 Generate exactly ${count} unique RWA strategies. Respond ONLY with a JSON array in this exact format:
 [
@@ -661,14 +675,20 @@ Generate exactly ${count} unique RWA strategies. Respond ONLY with a JSON array 
     "name": "<Strategy Name>",
     "description": "<Professional, detailed description with clear reasoning about market conditions, trends, and why this prediction matters. Should be 2-4 sentences explaining the context and significance.>",
     "timeLimitDays": <number (e.g. 2, 5, 30)>,
-    "evaluationLogic": "<Logic string with Source IDs and operators>",
-    "mathematicalLogic": "<Formula like 'asset_price > target_value'>",
+    "evaluationLogic": "<Logic string with tickers and operators, e.g., '(SPY > 700 AND QQQ > 550)'>",
+    "mathematicalLogic": "<Formula like 'asset1_price > 700 AND asset2_price > 550'>",
     "usedDataSources": [
       {
         "id": <number (The ID from the list above)>,
         "currentValue": <number (The value you saw from get_dia_prices)>,
         "targetValue": <number (The target value for the prediction)>,
-        "operator": ">"
+        "operator": ">" | "<" | ">=" | "<="
+      },
+      {
+        "id": <number (Second data source ID if using multiple)>,
+        "currentValue": <number>,
+        "targetValue": <number>,
+        "operator": ">" | "<" | ">=" | "<="
       }
     ]
   }
@@ -677,7 +697,9 @@ Generate exactly ${count} unique RWA strategies. Respond ONLY with a JSON array 
 CRITICAL RULES:
 - Use real tickers and their IDs from the provided list.
 - Ensure time limits are varied (from 2 days up to 60 days).
-- Ensure all ${count} strategies are unique.`;
+- Ensure all ${count} strategies are unique.
+- AT LEAST 3 strategies MUST use 2+ data sources with AND/OR logic.
+- The "usedDataSources" array MUST contain ALL data sources referenced in the evaluation logic.`;
 
   try {
     const systemPrompt = 'You are an expert RWA strategy generator. You create complex, verifiable market strategies based on real-time data sources with specific time horizons. Respond only with valid JSON array.';
